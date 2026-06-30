@@ -7,7 +7,7 @@
  *
  * 身份/会话映射（抽取自 P003）：
  *  - ?session=roomId → prompt override（调试台实时调 prompt）
- *  - ?user=userId    → 记忆注入键（recall 该用户的记忆）。当前记忆是占位，recall 返回空。
+ *  - ?user=userId    → mock 声纹输入（真实火山 payload 后续批次接入）。
  */
 
 import { Hono } from 'hono';
@@ -15,12 +15,20 @@ import { streamSSE } from 'hono/streaming';
 import { assemblePrompt } from '../prompt/orchestrator.js';
 import { createLlm } from '../providers/llm.js';
 import { getPromptOverride } from '../rtc-prompt-override.js';
-import { memory } from '../memory/index.js';
+import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index.js';
+import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
 import type { ChatTurn } from '../providers/types.js';
+import type { VolcSpeakerPayload } from '../memory/types.js';
 
 const customLlmRoute = new Hono();
 
 type OpenAiMessage = { role: string; content: unknown };
+type CustomLlmBody = {
+  messages?: OpenAiMessage[];
+  model?: string;
+  speaker_evidence?: VolcSpeakerPayload;
+  speakerEvidence?: VolcSpeakerPayload;
+};
 
 /** OpenAI content 可能是 string 或 content-parts 数组；火山 ASR 出的是纯文本，兜底两种形态。 */
 function extractText(content: unknown): string {
@@ -48,7 +56,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
     }
   }
 
-  let body: { messages?: OpenAiMessage[]; model?: string };
+  let body: CustomLlmBody;
   try {
     body = (await c.req.json()) as typeof body;
   } catch {
@@ -64,23 +72,69 @@ customLlmRoute.post('/chat/completions', async (c) => {
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: extractText(m.content) }));
 
   const sessionId = c.req.query('session') ?? undefined; // roomId → prompt override 键
-  const userId = c.req.query('user') ?? undefined; // 记忆注入键
+  const userId = c.req.query('user') ?? undefined; // mock voiceprintId / 后续 account hint
+  const speakerPayload = extractSpeakerPayload(body, {
+    roomId: sessionId,
+    queryVoiceprintId: c.req.query('voiceprintId') ?? userId,
+    queryVoiceprintName: c.req.query('voiceprintName') ?? userId,
+    queryScore: c.req.query('score'),
+    queryStatus: c.req.query('speakerStatus'),
+  });
+  const identityResolution = identity.resolve(speakerPayload);
+  const turnTrace = new TurnTrace({
+    roomId: sessionId ?? 'unknown-room',
+    turnId: `${sessionId ?? 'room'}-${Date.now()}`,
+    identity: identityResolution,
+    networkRttMs: networkRttFromHeaders(c.req.raw.headers),
+  });
 
   // override（调试台实时调的 prompt）优先：直接用它（自带完整内容）；否则走默认人设组装 + 记忆注入。
   const overridePrompt = getPromptOverride(sessionId);
-  const memories =
-    !overridePrompt && userId ? await memory.recall({ userId, userText, limit: 8 }).catch(() => []) : [];
-  const systemPrompt = overridePrompt ?? assemblePrompt({ memories });
+  const contextBundle =
+    !overridePrompt && userText.trim()
+      ? await turnTrace.measure('memoryReadMs', () =>
+          memory
+            .recall({
+              ownerId: identityResolution.ownerId,
+              query: userText,
+              working: history.map((turn) => ({ role: turn.role, content: turn.content, ts: Date.now() })),
+              limit: 8,
+            })
+            .catch((err) => ({
+              memories: [],
+              working: [],
+              readMemoryIds: [],
+              injectedMemoryIds: [],
+              usedProvisional: false,
+              degradationReason: err instanceof Error ? err.message : String(err),
+              elapsedMs: 0,
+            })),
+        )
+      : undefined;
+  if (contextBundle) {
+    turnTrace.addMemoryUse({
+      readMemoryIds: contextBundle.readMemoryIds,
+      injectedMemoryIds: contextBundle.injectedMemoryIds,
+      degradationReason: contextBundle.degradationReason,
+      usedProvisional: contextBundle.usedProvisional,
+    });
+  }
+  const systemPrompt =
+    overridePrompt ?? (await turnTrace.measure('promptAssemblyMs', () => assemblePrompt({ memoriesAsData: contextBundle })));
 
   console.log(
-    `[custom-llm] session=${sessionId ?? '-'} user=${userId ?? '-'}` +
-      `${overridePrompt ? ' [override]' : ''}${memories.length ? ` [mem:${memories.length}]` : ''}`,
+    `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
+      `${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}`,
   );
-
-  // 对话落记忆（异步、不阻塞回应）；当前记忆占位 → no-op。
-  if (userId && userText.trim()) {
-    void memory.extractAndWrite(userId, [...history, { role: 'user', content: userText }]).catch(() => {});
-  }
+  const userEvent = userText.trim()
+    ? eventLog.appendUtterance({
+        roomId: sessionId ?? 'unknown-room',
+        speakerEvidenceId: identityResolution.evidence.id,
+        isFinal: true,
+        sourceRole: 'user',
+        utteranceText: userText,
+      })
+    : undefined;
 
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
@@ -105,12 +159,42 @@ customLlmRoute.post('/chat/completions', async (c) => {
 
     enqueue(chunk({ role: 'assistant', content: '' }, null)); // OpenAI 规范：首 chunk 带 role
     try {
+      let assistantText = '';
       await llm.streamChat({
         systemPrompt,
         userText,
         history,
-        onDelta: (delta) => enqueue(chunk({ content: delta }, null)),
-        onDone: () => enqueue(chunk({}, 'stop')),
+        onDelta: (delta) => {
+          turnTrace.markLlmFirstToken();
+          assistantText += delta;
+          enqueue(chunk({ content: delta }, null));
+        },
+        onDone: () => {
+          if (userText.trim() && userEvent) {
+            void memory
+              .remember({
+                ownerId: identityResolution.ownerId,
+                identity: identityResolution,
+                eventId: userEvent.id,
+                roomId: sessionId ?? 'unknown-room',
+                utterance: userText,
+                sourceRole: 'user',
+                isFinal: true,
+                asrConfidence: 1,
+              })
+              .catch(() => {});
+          }
+          if (assistantText.trim()) {
+            eventLog.appendUtterance({
+              roomId: sessionId ?? 'unknown-room',
+              isFinal: true,
+              sourceRole: 'assistant',
+              utteranceText: assistantText.trim(),
+              heardByUser: true,
+            });
+          }
+          enqueue(chunk({}, 'stop'));
+        },
         onError: (err) => enqueue(chunk({ content: `（助手出错了：${err.message}）` }, 'stop')),
       });
     } catch (err) {
@@ -118,7 +202,29 @@ customLlmRoute.post('/chat/completions', async (c) => {
     }
     enqueue('[DONE]'); // 火山要求的终止符
     await chain;
+    writeTelemetry(turnTrace.finish());
   });
 });
 
 export { customLlmRoute };
+
+function extractSpeakerPayload(
+  body: CustomLlmBody,
+  fallback: {
+    roomId?: string;
+    queryVoiceprintId?: string;
+    queryVoiceprintName?: string;
+    queryScore?: string;
+    queryStatus?: string;
+  },
+): VolcSpeakerPayload {
+  const fromBody = body.speaker_evidence ?? body.speakerEvidence;
+  if (fromBody) return { ...fromBody, roomId: fromBody.roomId ?? fallback.roomId };
+  return mockIdentityPayload({
+    roomId: fallback.roomId,
+    voiceprintId: fallback.queryVoiceprintId,
+    voiceprintName: fallback.queryVoiceprintName,
+    score: fallback.queryScore ? Number(fallback.queryScore) : fallback.queryVoiceprintId ? 0.9 : undefined,
+    status: fallback.queryStatus,
+  });
+}

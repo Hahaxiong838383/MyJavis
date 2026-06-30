@@ -6,6 +6,11 @@ dist/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/telemetry/*.ndjson
+apps/server/data/*.db
+apps/server/data/*.db-wal
+apps/server/data/*.db-shm
+apps/server/eval/results.ndjson
 .DS_Store
 
 # 大体积参考资料(不入仓):火山 RTC 官方文档 PDF 105MB,超 GitHub 100MB 硬限

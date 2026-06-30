@@ -45,8 +45,21 @@ function buildCustomLlmUrl(roomId: string, userId?: string): string {
   return `${CUSTOM_LLM_URL}?${params.toString()}`;
 }
 
+type VoiceMode = 'identify' | 'denoise';
+
+interface VoiceChatOptions {
+  memoryUser?: string;
+  voiceMode: VoiceMode;
+  voiceprintIds: string[];
+  voiceprintScore: number;
+}
+
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
-function buildVoiceChatConfig(roomId: string, userId: string, memoryUser?: string): Record<string, unknown> {
+function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOptions): Record<string, unknown> {
+  const voicePrint =
+    opts.voiceMode === 'denoise'
+      ? { Mode: 1, IdList: opts.voiceprintIds.slice(0, 1), EnableSV: true }
+      : { Mode: 2, IdList: opts.voiceprintIds.slice(0, 3), Score: opts.voiceprintScore };
   return {
     AppId: process.env.VOLC_RTC_APP_ID,
     RoomId: roomId,
@@ -56,6 +69,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, memoryUser?: strin
       WelcomeMessage: WELCOME,
       UserId: 'myjavis_bot', // ★ 必须 ASCII，中文报 invalid UserID
       EnableConversationStateCallback: true,
+      ...(opts.voiceprintIds.length > 0 ? { VoicePrint: voicePrint } : {}),
     },
     Config: {
       ASRConfig: {
@@ -65,7 +79,10 @@ function buildVoiceChatConfig(roomId: string, userId: string, memoryUser?: strin
           AppId: process.env.VOLC_ASR_APP_ID,
           AccessToken: process.env.VOLC_ASR_ACCESS_TOKEN,
           ApiResourceId: process.env.VOLC_ASR_RESOURCE_ID || 'volc.bigasr.sauc.duration',
+          StreamMode: 0,
         },
+        FarfieldConfig: { Enable: true, Level: 'Medium' },
+        InterruptConfig: { InterruptSpeechDuration: 1500 },
       },
       TTSConfig: {
         Provider: 'volcano_bidirection',
@@ -86,7 +103,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, memoryUser?: strin
       },
       LLMConfig: {
         Mode: 'CustomLLM',
-        Url: buildCustomLlmUrl(roomId, memoryUser),
+        Url: buildCustomLlmUrl(roomId, opts.memoryUser),
         ModelName: 'myjavis',
         APIKey: process.env.CUSTOM_LLM_API_KEY || 'none',
         SystemMessages: [],
@@ -120,7 +137,7 @@ async function callRtcOpenAPI(action: string, body: Record<string, unknown>): Pr
 
 /**
  * 起一局实时语音：生成 RTC token + 起 AI agent。
- * body（均可选）：{ systemPrompt?: 调试台实时 prompt; userId?: 记忆注入键 }
+ * body（均可选）：{ systemPrompt?: 调试台实时 prompt; userId?: 记忆注入键; voiceMode?: identify|denoise; voiceprintIds?: string[] }
  * 返回前端进房所需（凭证不含）：{ appId, roomId, userId, token, taskId }。
  */
 rtcRoute.post('/start', async (c) => {
@@ -136,12 +153,26 @@ rtcRoute.post('/start', async (c) => {
   const roomId = `myjavis-${randomUUID()}`;
   const userId = `user-${randomUUID().slice(0, 8)}`;
 
-  const startBody = (await c.req.json().catch(() => ({}))) as { systemPrompt?: string; userId?: string };
+  const startBody = (await c.req.json().catch(() => ({}))) as {
+    systemPrompt?: string;
+    userId?: string;
+    voiceMode?: VoiceMode;
+    voiceprintIds?: string[];
+    voiceprintScore?: number;
+  };
   if (startBody.systemPrompt?.trim()) {
     setPromptOverride(roomId, startBody.systemPrompt);
     console.log(`[rtc] prompt override set room=${roomId} (${startBody.systemPrompt.length} 字符)`);
   }
   const memoryUser = startBody.userId?.trim() || undefined;
+  const voiceMode: VoiceMode = startBody.voiceMode === 'denoise' ? 'denoise' : 'identify';
+  const voiceprintIds =
+    startBody.voiceprintIds?.filter((id) => id.trim()).map((id) => id.trim()) ??
+    (process.env.VOLC_VOICEPRINT_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+  const voiceprintScore = Number.isFinite(startBody.voiceprintScore) ? Number(startBody.voiceprintScore) : 50;
 
   // RTC token（订阅 + 发布权限，24h 过期）
   const key = new AccessToken(appId, appKey, roomId, userId);
@@ -151,15 +182,18 @@ rtcRoute.post('/start', async (c) => {
   const token = key.serialize();
 
   // 起 AI agent（火山起 task，AI 回调我方 /v1 大脑）
-  const result = await callRtcOpenAPI('StartVoiceChat', buildVoiceChatConfig(roomId, userId, memoryUser));
+  const result = await callRtcOpenAPI(
+    'StartVoiceChat',
+    buildVoiceChatConfig(roomId, userId, { memoryUser, voiceMode, voiceprintIds, voiceprintScore }),
+  );
   const err = result?.ResponseMetadata?.Error;
   if (err) {
     console.log(`[rtc] StartVoiceChat failed: ${err.Code} ${err.Message}`);
     return c.json({ ok: false, error: `${err.Code}: ${err.Message}` }, 502);
   }
 
-  console.log(`[rtc] started room=${roomId} user=${userId}`);
-  return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId });
+  console.log(`[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length}`);
+  return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
 });
 
 /** 停止本局（前端离房时调）。 */

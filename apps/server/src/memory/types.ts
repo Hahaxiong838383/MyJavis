@@ -1,44 +1,135 @@
-/**
- * 记忆系统接口 —— ⬜ 占位，等产品定义。
- *
- * P003 的记忆是两层：L0 会话历史（pipeline 成员，断开即丢）+ L1 SQLite 长期画像
- * （nickname/interests/personality 等，异步 LLM 每 N 轮抽取）。
- *
- * MyJavis「记什么、怎么用、存哪、是否遗忘」强依赖产品定义，故这里只定最小接口，
- * 实现（CQRS / EvoMap / SQLite）待 docs/PRODUCT-DEFINITION.md §3 落地后再选。
- */
+export type SourceRole = 'user' | 'assistant' | 'tool';
+export type MemoryStatus = 'committed' | 'provisional' | 'quarantine';
+export type MemoryType =
+  | 'preference'
+  | 'profile_fact'
+  | 'event'
+  | 'reminder'
+  | 'relationship'
+  | 'location'
+  | 'safety'
+  | 'ephemeral_context';
+export type SpeakerEvidenceState =
+  | 'unverified'
+  | 'registering'
+  | 'active_low'
+  | 'active_stable'
+  | 'revoked';
 
-import type { ChatTurn } from '../providers/types.js';
+export interface VolcSpeakerPayload {
+  provider?: string;
+  roomId?: string;
+  voiceprintId?: string;
+  voiceprintName?: string;
+  score?: number;
+  mode?: string | number;
+  status?: string;
+  ts?: number;
+  raw?: unknown;
+}
 
-/** 一条注入 LLM 的记忆片段（结构待产品定义细化） */
-export interface MemoryFragment {
-  kind: string; // 如 'preference' | 'fact' | 'profile' …待定义
-  text: string;
-  confidence?: number;
-  updatedAt?: number;
+export interface SpeakerEvidence {
+  id: string;
+  provider: string;
+  voiceprintId?: string;
+  voiceprintName?: string;
+  score?: number;
+  mode?: string;
+  rawPayload: unknown;
+  roomId: string;
+  ts: number;
+  state: SpeakerEvidenceState;
+  confidence: number;
+}
+
+export interface IdentityResolution {
+  evidence: SpeakerEvidence;
+  ownerId?: string;
+  state: SpeakerEvidenceState;
+  quarantine: boolean;
+  reason?: string;
+}
+
+export interface StructuredMemoryContent {
+  kind: MemoryType;
+  key: string;
+  value: string;
+  source: 'user_said' | 'tool' | 'explicit_confirmation';
+}
+
+export interface MemoryItem {
+  id: string;
+  ownerId: string;
+  namespace: string;
+  type: MemoryType;
+  content: StructuredMemoryContent;
+  sourceRole: SourceRole;
+  sourceSpan: string;
+  asrConfidence?: number;
+  confidence: number;
+  status: MemoryStatus;
+  validFrom?: number;
+  validUntil?: number;
+  ttl?: number;
+  createdAt: number;
+  lastReinforced?: number;
+  provenance: Record<string, unknown>;
+  acl: Record<string, unknown>;
+  speakerEvidenceId?: string;
+  eventId?: string;
+}
+
+export interface ChatWorkingTurn {
+  role: SourceRole;
+  content: string;
+  ts: number;
+}
+
+export interface ContextBundle {
+  memories: MemoryItem[];
+  working: ChatWorkingTurn[];
+  readMemoryIds: string[];
+  injectedMemoryIds: string[];
+  usedProvisional: boolean;
+  degradationReason?: string;
 }
 
 export interface RecallQuery {
-  userId: string;
-  /** 本轮用户输入，供语义/关键词检索 */
-  userText: string;
+  ownerId?: string;
+  query: string;
+  working?: ChatWorkingTurn[];
   limit?: number;
 }
 
-export interface MemoryStore {
-  /** 取要注入本轮 prompt 的记忆（最近 N / 向量 / 关键词，由实现决定） */
-  recall(q: RecallQuery): Promise<MemoryFragment[]>;
-
-  /** 从一段对话异步抽取并写入记忆（P003 是每 N 轮跑一次，超时不阻塞语音） */
-  extractAndWrite(userId: string, recentTurns: ChatTurn[]): Promise<void>;
+export interface RecallResult extends ContextBundle {
+  elapsedMs: number;
 }
 
-/** 空实现：不记忆、不抽取。骨架默认装它，跑通链路用；产品定义后替换。 */
-export class NullMemoryStore implements MemoryStore {
-  async recall(): Promise<MemoryFragment[]> {
-    return [];
-  }
-  async extractAndWrite(): Promise<void> {
-    /* no-op，待产品定义 */
-  }
+export interface RememberInput {
+  ownerId?: string;
+  identity?: IdentityResolution;
+  eventId?: string;
+  roomId: string;
+  utterance: string;
+  sourceRole: SourceRole;
+  isFinal: boolean;
+  asrConfidence?: number;
+  sourceSpan?: string;
+  ts?: number;
+}
+
+export interface RememberResult {
+  eventId: string;
+  memoryId?: string;
+  status: 'stored' | 'quarantined' | 'skipped';
+  reason?: string;
+}
+
+export interface Memory {
+  recall(q: RecallQuery): Promise<RecallResult>;
+  remember(input: RememberInput): Promise<RememberResult>;
+}
+
+export interface IdentityProviderAdapter {
+  resolve(payload: VolcSpeakerPayload): IdentityResolution;
 }
