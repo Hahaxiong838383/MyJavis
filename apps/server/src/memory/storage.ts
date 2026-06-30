@@ -39,6 +39,7 @@ interface MemoryRow {
   asr_confidence: number | null;
   confidence: number;
   status: MemoryStatus;
+  suspended?: number | null;
   valid_from: number | null;
   valid_until: number | null;
   ttl: number | null;
@@ -136,6 +137,7 @@ export class SQLiteMemoryStorage {
         asr_confidence REAL,
         confidence REAL NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('committed','provisional','quarantine')),
+        suspended INTEGER NOT NULL DEFAULT 0,
         valid_from INTEGER,
         valid_until INTEGER,
         ttl INTEGER,
@@ -176,17 +178,29 @@ export class SQLiteMemoryStorage {
         ON event_log(room_id, asr_segment_id);
       CREATE INDEX IF NOT EXISTS idx_speaker_voiceprint
         ON speaker_evidence(voiceprint_id, state, ts);
-
+    `);
+    this.ensureSuspendedColumn();
+    this.db.exec(`
       DROP VIEW IF EXISTS hot_readable_memories;
       CREATE VIEW hot_readable_memories AS
         SELECT * FROM memory_item
         WHERE status IN ('committed', 'provisional')
+          AND suspended = 0
           AND (valid_until IS NULL OR valid_until > (unixepoch('now') * 1000));
 
       DROP VIEW IF EXISTS quarantined_memories;
       CREATE VIEW quarantined_memories AS
         SELECT * FROM memory_item WHERE status = 'quarantine';
     `);
+  }
+
+  private ensureSuspendedColumn(): void {
+    try {
+      this.db.exec(`ALTER TABLE memory_item ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0;`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name/i.test(message)) throw err;
+    }
   }
 
   insertSpeakerEvidence(evidence: SpeakerEvidence): void {
@@ -284,9 +298,9 @@ export class SQLiteMemoryStorage {
       .prepare(
         `INSERT OR IGNORE INTO memory_item
           (id, owner_id, namespace, type, content_structured_json, source_role, source_span,
-           asr_confidence, confidence, status, valid_from, valid_until, ttl, created_at,
+           asr_confidence, confidence, status, suspended, valid_from, valid_until, ttl, created_at,
            last_reinforced, provenance_json, acl_json, speaker_evidence_id, event_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         item.id,
@@ -299,6 +313,7 @@ export class SQLiteMemoryStorage {
         item.asrConfidence ?? null,
         item.confidence,
         item.status,
+        item.suspended ? 1 : 0,
         item.validFrom ?? null,
         item.validUntil ?? null,
         item.ttl ?? null,
@@ -316,7 +331,7 @@ export class SQLiteMemoryStorage {
       .prepare(
         `UPDATE memory_item SET
           owner_id = ?, namespace = ?, type = ?, content_structured_json = ?, source_role = ?,
-          source_span = ?, asr_confidence = ?, confidence = ?, status = ?, valid_from = ?,
+          source_span = ?, asr_confidence = ?, confidence = ?, status = ?, suspended = ?, valid_from = ?,
           valid_until = ?, ttl = ?, last_reinforced = ?, provenance_json = ?, acl_json = ?,
           speaker_evidence_id = ?, event_id = ?
          WHERE id = ?`,
@@ -331,6 +346,7 @@ export class SQLiteMemoryStorage {
         item.asrConfidence ?? null,
         item.confidence,
         item.status,
+        item.suspended ? 1 : 0,
         item.validFrom ?? null,
         item.validUntil ?? null,
         item.ttl ?? null,
@@ -358,6 +374,15 @@ export class SQLiteMemoryStorage {
       .prepare(`SELECT * FROM memory_item WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?`)
       .all(ownerId, limit) as unknown as MemoryRow[];
     return rows.map(rowToMemoryItem);
+  }
+
+  listMemoriesByOwner(ownerId: string, limit = 500): MemoryItem[] {
+    return this.listOwnerMemories(ownerId, limit);
+  }
+
+  setMemorySuspended(id: string, suspended: boolean): boolean {
+    const result = this.db.prepare(`UPDATE memory_item SET suspended = ? WHERE id = ?`).run(suspended ? 1 : 0, id);
+    return Number(result.changes ?? 0) > 0;
   }
 
   listOwnerMemoriesByType(ownerId: string, type: MemoryType, limit = 100): MemoryItem[] {
@@ -402,6 +427,10 @@ export class SQLiteMemoryStorage {
         JSON.stringify(args.activeConditions),
         args.updatedAt ?? Date.now(),
       );
+  }
+
+  deletePrefSummary(ownerId: string, dimension: string): void {
+    this.db.prepare(`DELETE FROM pref_summary WHERE owner_id = ? AND dimension = ?`).run(ownerId, dimension);
   }
 
   listPrefSummaries(ownerId: string): Array<{
@@ -490,6 +519,7 @@ function rowToMemoryItem(row: MemoryRow): MemoryItem {
     asrConfidence: row.asr_confidence ?? undefined,
     confidence: row.confidence,
     status: row.status,
+    suspended: Number(row.suspended ?? 0) === 1,
     validFrom: row.valid_from ?? undefined,
     validUntil: row.valid_until ?? undefined,
     ttl: row.ttl ?? undefined,

@@ -68,6 +68,7 @@ export interface MemoryItem {
   asrConfidence?: number;
   confidence: number;
   status: MemoryStatus;
+  suspended?: boolean;
   validFrom?: number;
   validUntil?: number;
   ttl?: number;
@@ -131,6 +132,12 @@ export interface RememberResult {
 export interface Memory {
   recall(q: RecallQuery): Promise<RecallResult>;
   remember(input: RememberInput): Promise<RememberResult>;
+  listByOwner(ownerId: string): Promise<MemoryItem[]>;
+  suspend(ownerId: string, memoryId: string): Promise<GovernanceResult>;
+  resume(ownerId: string, memoryId: string): Promise<GovernanceResult>;
+  delete(ownerId: string, memoryId: string): Promise<GovernanceResult>;
+  reassign(ownerId: string, memoryId: string, targetOwnerId: string): Promise<GovernanceResult>;
+  exportOwner(ownerId: string): Promise<MemoryExport>;
 }
 
 export interface IdentityProviderAdapter {
@@ -166,4 +173,16 @@ export interface CorrectionIntent {
   span: string;
   replacement?: string;
   targetOwnerId?: string;
+}
+
+export interface GovernanceResult {
+  ok: boolean;
+  memoryId?: string;
+  reason?: 'not_found' | 'cross_owner_rejected' | 'target_owner_required';
+}
+
+export interface MemoryExport {
+  ownerId: string;
+  exportedAt: number;
+  memories: MemoryItem[];
 }

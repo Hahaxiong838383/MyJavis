@@ -11,6 +11,9 @@
     "dev:server": "pnpm --filter @myjavis/server dev",
     "dev:web": "pnpm --filter @myjavis/web dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "tauri:dev": "pnpm --filter @myjavis/web tauri:dev",
+    "tauri:build": "pnpm --filter @myjavis/web tauri:build",
+    "tauri": "pnpm --filter @myjavis/web tauri"
   }
 }

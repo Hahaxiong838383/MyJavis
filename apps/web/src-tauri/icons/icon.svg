@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MyJavis placeholder icon">
+  <rect width="512" height="512" rx="112" fill="#04060c"/>
+  <circle cx="256" cy="256" r="128" fill="none" stroke="#46cfe0" stroke-width="28"/>
+  <circle cx="256" cy="256" r="56" fill="#46cfe0"/>
+  <path d="M112 256c56-72 232-72 288 0" fill="none" stroke="#cfe9ee" stroke-width="18" stroke-linecap="round" opacity=".7"/>
+</svg>

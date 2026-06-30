@@ -13,12 +13,14 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
+import { governanceRoute } from './routes/governance.js';
 
 const app = new Hono();
 const port = Number(process.env.PORT ?? 3001);
 
 app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server' }));
 app.route('/api/rtc', rtcRoute);
+app.route('/api/governance', governanceRoute);
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 
@@ -49,5 +51,5 @@ function logProviderStatus(): void {
   console.log(`[server] ASR: ${asrOk ? 'ready' : 'missing-env'}`);
   console.log(`[server] TTS: ${ttsOk ? 'ready' : 'missing-env'}`);
   console.log(`[server] LLM: ${llmOk ? 'ready' : 'missing-env'}`);
-  console.log(`[server] memory: NullMemoryStore (占位，待产品定义)`);
+  console.log(`[server] memory: SQLiteMemoryStore + governance`);
 }

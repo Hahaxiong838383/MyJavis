@@ -1,18 +1,13 @@
 import { useVoiceRtc } from './useVoiceRtc';
 import { useAppStore } from './store';
+import { PulseOrb } from './components/PulseOrb';
+import { GovernancePanel } from './components/GovernancePanel';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '未连接',
   listening: '在听…',
   thinking: '思考中…',
   speaking: '说话中…',
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  idle: '#6b7280',
-  listening: '#22c55e',
-  thinking: '#eab308',
-  speaking: '#3b82f6',
 };
 
 const PHASE_LABEL: Record<string, string> = {
@@ -35,15 +30,7 @@ export default function App() {
       </header>
 
       <main style={styles.main}>
-        <div
-          style={{
-            ...styles.orb,
-            background: `radial-gradient(circle at 30% 30%, ${STATUS_COLOR[voiceStatus]}, #1f2937)`,
-            boxShadow: connected ? `0 0 60px ${STATUS_COLOR[voiceStatus]}55` : 'none',
-          }}
-        >
-          <span style={styles.orbText}>{connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]}</span>
-        </div>
+        <PulseOrb phase={voiceStatus} label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]} />
 
         <div style={styles.captions}>
           {userSubtitle && (
@@ -77,10 +64,12 @@ export default function App() {
             结束对话
           </button>
         )}
+
+        <GovernancePanel />
       </main>
 
       <footer style={styles.footer}>
-        需配置 <code>.env</code> 火山 RTC/ASR/TTS + LLM 真值后方可真机对话 · 记忆系统占位（待产品定义）
+        需配置 <code>.env</code> 火山 RTC/ASR/TTS 后方可真机对话 · Pulse 本批使用本地麦克风电平占位
       </footer>
     </div>
   );
@@ -99,16 +88,6 @@ const styles: Record<string, React.CSSProperties> = {
   title: { margin: 0, fontSize: 28, letterSpacing: 1 },
   subtitle: { fontSize: 13, color: '#9ca3af' },
   main: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, padding: 24 },
-  orb: {
-    width: 200,
-    height: 200,
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transition: 'box-shadow .4s',
-  },
-  orbText: { fontSize: 16, fontWeight: 600 },
   captions: { minHeight: 64, maxWidth: 520, textAlign: 'center' },
   userLine: { margin: '6px 0', color: '#93c5fd', fontSize: 15 },
   botLine: { margin: '6px 0', color: '#e5e7eb', fontSize: 17 },
