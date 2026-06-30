@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useVoiceRtc } from './useVoiceRtc';
 import { useAppStore } from './store';
 import { PulseOrb } from './components/PulseOrb';
@@ -22,6 +23,24 @@ export default function App() {
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
 
+  // [临时·mic-test] 验证 WKWebView 是否放行 getUserMedia（无需火山凭据）。命门验完即可删。
+  const [micResult, setMicResult] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [micErr, setMicErr] = useState('');
+  const testMic = async () => {
+    setMicResult('testing');
+    setMicErr('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop()); // 停掉测试流，PulseOrb 自己会再开
+      setMicResult('ok');
+    } catch (e) {
+      setMicResult('fail');
+      setMicErr(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+    }
+  };
+  // 测麦克风成功后把律动球顶成 listening，直观看它是否随说话起伏。
+  const orbPhase = micResult === 'ok' && voiceStatus === 'idle' ? 'listening' : voiceStatus;
+
   return (
     <div style={styles.page}>
       <header style={styles.header}>
@@ -30,7 +49,16 @@ export default function App() {
       </header>
 
       <main style={styles.main}>
-        <PulseOrb phase={voiceStatus} label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]} />
+        <PulseOrb phase={orbPhase} label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[orbPhase]} />
+
+        {/* [临时·mic-test] 验 WKWebView getUserMedia 命门，验完删此块 */}
+        <div style={styles.micTest}>
+          <button style={{ ...styles.btn, ...styles.btnMic }} disabled={micResult === 'testing'} onClick={() => void testMic()}>
+            🎤 {micResult === 'testing' ? '请求麦克风中…' : '测麦克风 (getUserMedia)'}
+          </button>
+          {micResult === 'ok' && <p style={styles.micOk}>✅ getUserMedia 成功，麦克风已授权。对着说话，律动球应随声起伏。</p>}
+          {micResult === 'fail' && <p style={styles.micFail}>❌ getUserMedia 失败：{micErr}（WKWebView 拒绝媒体捕获，需补 webview 权限处理）</p>}
+        </div>
 
         <div style={styles.captions}>
           {userSubtitle && (
@@ -96,5 +124,9 @@ const styles: Record<string, React.CSSProperties> = {
   btn: { padding: '14px 40px', borderRadius: 999, border: 'none', fontSize: 16, fontWeight: 700, cursor: 'pointer' },
   btnPrimary: { background: '#22c55e', color: '#04210f' },
   btnStop: { background: '#ef4444', color: '#fff' },
+  micTest: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, maxWidth: 520, textAlign: 'center' },
+  btnMic: { background: '#38bdf8', color: '#04210f', padding: '12px 28px', fontSize: 15 },
+  micOk: { color: '#4ade80', fontSize: 14, margin: 0 },
+  micFail: { color: '#f87171', fontSize: 14, margin: 0 },
   footer: { padding: '16px', textAlign: 'center', fontSize: 12, color: '#6b7280' },
 };
