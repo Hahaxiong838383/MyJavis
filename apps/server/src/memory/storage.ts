@@ -50,6 +50,14 @@ interface MemoryRow {
   event_id: string | null;
 }
 
+interface PrefSummaryRow {
+  owner_id: string;
+  dimension: string;
+  current_value: string;
+  active_conditions_json: string;
+  updated_at: number;
+}
+
 const DEFAULT_DB_PATH = resolve(process.cwd(), 'data/myjavis-memory.db');
 
 export class SQLiteMemoryStorage {
@@ -301,6 +309,150 @@ export class SQLiteMemoryStorage {
         item.speakerEvidenceId ?? null,
         item.eventId ?? null,
       );
+  }
+
+  updateMemoryItem(item: MemoryItem): void {
+    this.db
+      .prepare(
+        `UPDATE memory_item SET
+          owner_id = ?, namespace = ?, type = ?, content_structured_json = ?, source_role = ?,
+          source_span = ?, asr_confidence = ?, confidence = ?, status = ?, valid_from = ?,
+          valid_until = ?, ttl = ?, last_reinforced = ?, provenance_json = ?, acl_json = ?,
+          speaker_evidence_id = ?, event_id = ?
+         WHERE id = ?`,
+      )
+      .run(
+        item.ownerId,
+        item.namespace,
+        item.type,
+        JSON.stringify(item.content),
+        item.sourceRole,
+        item.sourceSpan,
+        item.asrConfidence ?? null,
+        item.confidence,
+        item.status,
+        item.validFrom ?? null,
+        item.validUntil ?? null,
+        item.ttl ?? null,
+        item.lastReinforced ?? null,
+        JSON.stringify(item.provenance),
+        JSON.stringify(item.acl),
+        item.speakerEvidenceId ?? null,
+        item.eventId ?? null,
+        item.id,
+      );
+  }
+
+  getMemoryItem(id: string): MemoryItem | undefined {
+    const row = this.db.prepare(`SELECT * FROM memory_item WHERE id = ?`).get(id) as unknown as MemoryRow | undefined;
+    return row ? rowToMemoryItem(row) : undefined;
+  }
+
+  deleteMemoryItem(id: string): boolean {
+    const result = this.db.prepare(`DELETE FROM memory_item WHERE id = ?`).run(id);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  listOwnerMemories(ownerId: string, limit = 100): MemoryItem[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM memory_item WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?`)
+      .all(ownerId, limit) as unknown as MemoryRow[];
+    return rows.map(rowToMemoryItem);
+  }
+
+  listOwnerMemoriesByType(ownerId: string, type: MemoryType, limit = 100): MemoryItem[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM memory_item WHERE owner_id = ? AND type = ? ORDER BY created_at DESC LIMIT ?`)
+      .all(ownerId, type, limit) as unknown as MemoryRow[];
+    return rows.map(rowToMemoryItem);
+  }
+
+  listMemoryByDimension(ownerId: string, dimension: string, limit = 20): MemoryItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_item
+         WHERE owner_id = ? AND json_extract(content_structured_json, '$.key') = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(ownerId, dimension, limit) as unknown as MemoryRow[];
+    return rows.map(rowToMemoryItem);
+  }
+
+  upsertPrefSummary(args: {
+    ownerId: string;
+    dimension: string;
+    currentValue: string;
+    activeConditions: Array<{ memoryId: string; value: string; ts: number }>;
+    updatedAt?: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO pref_summary(owner_id, dimension, current_value, active_conditions_json, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(owner_id, dimension) DO UPDATE SET
+           current_value = excluded.current_value,
+           active_conditions_json = excluded.active_conditions_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        args.ownerId,
+        args.dimension,
+        args.currentValue,
+        JSON.stringify(args.activeConditions),
+        args.updatedAt ?? Date.now(),
+      );
+  }
+
+  listPrefSummaries(ownerId: string): Array<{
+    ownerId: string;
+    dimension: string;
+    currentValue: string;
+    activeConditions: Array<{ memoryId: string; value: string; ts: number }>;
+    updatedAt: number;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM pref_summary WHERE owner_id = ? ORDER BY updated_at DESC`)
+      .all(ownerId) as unknown as PrefSummaryRow[];
+    return rows.map((row) => ({
+      ownerId: row.owner_id,
+      dimension: row.dimension,
+      currentValue: row.current_value,
+      activeConditions: JSON.parse(row.active_conditions_json) as Array<{ memoryId: string; value: string; ts: number }>,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  insertAudit(args: {
+    id: string;
+    ts?: number;
+    ownerId?: string;
+    kind: string;
+    decision: Record<string, unknown>;
+    rationale: string;
+    signal: Record<string, unknown>;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO audit(id, ts, owner_id, kind, decision_json, rationale, signal_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        args.id,
+        args.ts ?? Date.now(),
+        args.ownerId ?? null,
+        args.kind,
+        JSON.stringify(args.decision),
+        args.rationale,
+        JSON.stringify(args.signal),
+      );
+  }
+
+  countAudit(kind?: string): number {
+    const row = kind
+      ? (this.db.prepare(`SELECT COUNT(*) as n FROM audit WHERE kind = ?`).get(kind) as { n: number })
+      : (this.db.prepare(`SELECT COUNT(*) as n FROM audit`).get() as { n: number });
+    return Number(row.n);
   }
 
   listHotMemories(ownerId: string, limit = 8): MemoryItem[] {

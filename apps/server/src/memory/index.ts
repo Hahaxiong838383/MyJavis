@@ -2,12 +2,15 @@ import { createHash } from 'node:crypto';
 import { SQLiteMemoryStorage } from './storage.js';
 import { EventLog } from '../session/event-log.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
+import { admitCandidate, auditId } from './admission.js';
+import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
 import type {
   IdentityProviderAdapter,
   Memory,
   MemoryItem,
   MemoryStatus,
   MemoryType,
+  MemoryCandidate,
   RecallQuery,
   RecallResult,
   RememberInput,
@@ -39,7 +42,11 @@ export class MyJavisMemory implements Memory {
       };
     }
 
-    const memories = this.db.listHotMemories(q.ownerId, q.limit ?? 8);
+    const preferenceSummaries = this.db.listPrefSummaries(q.ownerId).map((summary) => prefSummaryToMemoryItem(summary));
+    const memories = [
+      ...preferenceSummaries,
+      ...this.db.listHotMemories(q.ownerId, q.limit ?? 8).filter((item) => item.type !== 'preference'),
+    ].slice(0, q.limit ?? 8);
     return {
       memories,
       working: q.working ?? [],
@@ -68,47 +75,301 @@ export class MyJavisMemory implements Memory {
 
     const identityStable = input.identity?.state === 'active_stable' && Boolean(input.ownerId);
     const unsafe = isInstructionInjection(input.utterance);
-    const status: MemoryStatus = identityStable && !unsafe ? 'provisional' : 'quarantine';
     const ownerId = identityStable && input.ownerId ? input.ownerId : 'unattributed';
-    const type = inferMemoryType(input.utterance, unsafe);
-    const content = structureMemory(input.utterance, type);
-    const memoryId = deterministicMemoryId(input.roomId, input.utterance, input.identity?.evidence.id, type);
 
-    const item: MemoryItem = {
-      id: memoryId,
-      ownerId,
-      namespace: status === 'quarantine' ? `session:${input.roomId}` : `private:${ownerId}`,
-      type,
-      content,
-      sourceRole: input.sourceRole,
-      sourceSpan: input.sourceSpan ?? input.utterance,
-      asrConfidence: input.asrConfidence,
-      confidence: unsafe ? 0 : input.identity?.evidence.confidence ?? 0.5,
-      status,
-      validFrom: input.ts ?? Date.now(),
-      validUntil: defaultValidUntil(type),
-      ttl: defaultTtl(type),
-      createdAt: Date.now(),
-      provenance: {
-        roomId: input.roomId,
+    const correction = extractCorrectionIntent(input.utterance);
+    if (correction) {
+      return this.applyCorrection({ input, ownerId, eventId: event.id, correction });
+    }
+
+    if (unsafe) {
+      const item = this.buildMemoryItem({
+        input,
+        ownerId: 'unattributed',
         eventId: event.id,
-        speakerEvidenceId: input.identity?.evidence.id,
-        identityState: input.identity?.state,
-        quarantineReason: unsafe ? 'prompt_injection' : input.identity?.reason,
-        rawUtterance: input.utterance,
-      },
-      acl: { read: [ownerId], write: [ownerId], delete: [ownerId] },
-      speakerEvidenceId: input.identity?.evidence.id,
-      eventId: event.id,
-    };
-    this.db.insertMemoryItem(item);
+        candidate: fallbackCandidate(input.utterance, 'ephemeral_context'),
+        status: 'quarantine',
+        confidence: 0,
+        reason: 'prompt_injection',
+      });
+      this.db.insertMemoryItem(item);
+      this.audit({
+        ownerId,
+        kind: 'admission',
+        decision: { action: 'ignore', type: item.type, confidence: 0, conflicts: [], rationale: 'prompt_injection' },
+        rationale: 'prompt_injection',
+        signal: { utterance: input.utterance, eventId: event.id },
+      });
+      return { eventId: event.id, memoryId: item.id, status: 'quarantined', reason: 'prompt_injection' };
+    }
 
+    const candidates = extractMemoryCandidates(input.utterance, input.ts ?? Date.now());
+    if (candidates.length === 0) {
+      const escalation = maybeEscalateAmbiguousToLlm();
+      this.audit({
+        ownerId,
+        kind: 'admission',
+        decision: { action: 'ignore', type: 'ephemeral_context', confidence: 0, conflicts: [], rationale: 'no_explicit_trigger' },
+        rationale: 'no_explicit_trigger',
+        signal: { utterance: input.utterance, eventId: event.id, escalation },
+      });
+      return { eventId: event.id, status: 'skipped', reason: 'no_explicit_trigger' };
+    }
+
+    if (!identityStable) {
+      const item = this.buildMemoryItem({
+        input,
+        ownerId: 'unattributed',
+        eventId: event.id,
+        candidate: candidates[0]!,
+        status: 'quarantine',
+        confidence: input.identity?.evidence.confidence ?? 0,
+        reason: input.identity?.reason ?? 'identity_unstable',
+      });
+      this.db.insertMemoryItem(item);
+      this.audit({
+        ownerId,
+        kind: 'admission',
+        decision: {
+          action: 'ignore',
+          type: item.type,
+          confidence: item.confidence,
+          conflicts: [],
+          rationale: input.identity?.reason ?? 'identity_unstable',
+          status: 'quarantine',
+        },
+        rationale: input.identity?.reason ?? 'identity_unstable',
+        signal: { utterance: input.utterance, eventId: event.id, candidate: candidates[0] },
+      });
+      return { eventId: event.id, memoryId: item.id, status: 'quarantined', reason: input.identity?.reason ?? 'identity_unstable' };
+    }
+
+    let lastResult: RememberResult = { eventId: event.id, status: 'skipped', reason: 'no_candidate' };
+    for (const candidate of candidates) {
+      const existing = this.db.listMemoryByDimension(ownerId, candidate.dimension, 20);
+      const decision = admitCandidate({ candidate, existing, now: input.ts ?? Date.now() });
+      this.audit({
+        ownerId,
+        kind: 'admission',
+        decision: decision as unknown as Record<string, unknown>,
+        rationale: decision.rationale,
+        signal: { utterance: input.utterance, eventId: event.id, candidate },
+      });
+      if (decision.action === 'ignore') {
+        lastResult = { eventId: event.id, status: 'skipped', decision, reason: decision.rationale };
+        continue;
+      }
+      if (decision.action === 'promote') {
+        const reinforced = this.reinforceExisting(existing, candidate, decision.status ?? 'committed');
+        if (reinforced) {
+          lastResult = { eventId: event.id, memoryId: reinforced.id, status: 'updated', decision };
+          continue;
+        }
+      }
+      const item = this.buildMemoryItem({
+        input,
+        ownerId,
+        eventId: event.id,
+        candidate,
+        status: decision.status ?? 'provisional',
+        confidence: decision.confidence,
+        conflicts: decision.conflicts,
+      });
+      this.db.insertMemoryItem(item);
+      if (candidate.type === 'preference') this.recomputePrefSummary(ownerId, candidate.dimension);
+      lastResult = {
+        eventId: event.id,
+        memoryId: item.id,
+        status: decision.action === 'update' ? 'updated' : 'stored',
+        decision,
+      };
+    }
+
+    return lastResult;
+  }
+
+  private buildMemoryItem(args: {
+    input: RememberInput;
+    ownerId: string;
+    eventId: string;
+    candidate: MemoryCandidate;
+    status: MemoryStatus;
+    confidence: number;
+    conflicts?: string[];
+    reason?: string;
+  }): MemoryItem {
+    const createdAt = monotonicNow();
     return {
-      eventId: event.id,
-      memoryId,
-      status: status === 'quarantine' ? 'quarantined' : 'stored',
-      reason: unsafe ? 'prompt_injection' : input.identity?.reason,
+      id: deterministicMemoryId(
+        args.input.roomId,
+        args.candidate.sourceSpan,
+        args.input.identity?.evidence.id,
+        args.candidate.type,
+        args.candidate.dimension,
+      ),
+      ownerId: args.ownerId,
+      namespace: args.status === 'quarantine' ? `session:${args.input.roomId}` : `private:${args.ownerId}`,
+      type: args.candidate.type,
+      content: args.candidate.content,
+      sourceRole: args.input.sourceRole,
+      sourceSpan: args.input.sourceSpan ?? args.candidate.sourceSpan,
+      asrConfidence: args.input.asrConfidence,
+      confidence: args.confidence,
+      status: args.status,
+      validFrom: args.input.ts ?? createdAt,
+      validUntil: args.candidate.validUntil ?? defaultValidUntil(args.candidate.type),
+      ttl: args.candidate.ttl ?? defaultTtl(args.candidate.type),
+      createdAt,
+      provenance: {
+        roomId: args.input.roomId,
+        eventId: args.eventId,
+        speakerEvidenceId: args.input.identity?.evidence.id,
+        identityState: args.input.identity?.state,
+        quarantineReason: args.reason,
+        rawUtterance: args.input.utterance,
+        conflicts: args.conflicts ?? [],
+        salience: args.candidate.salience,
+      },
+      acl: { read: [args.ownerId], write: [args.ownerId], delete: [args.ownerId] },
+      speakerEvidenceId: args.input.identity?.evidence.id,
+      eventId: args.eventId,
     };
+  }
+
+  private reinforceExisting(existing: MemoryItem[], candidate: MemoryCandidate, status: MemoryStatus): MemoryItem | undefined {
+    const target = existing.find((item) => item.content.value === candidate.content.value);
+    if (!target) return undefined;
+    const next: MemoryItem = {
+      ...target,
+      confidence: Math.min(0.99, target.confidence + 0.08),
+      status,
+      lastReinforced: Date.now(),
+    };
+    this.db.updateMemoryItem(next);
+    if (next.type === 'preference') this.recomputePrefSummary(next.ownerId, next.content.key);
+    return next;
+  }
+
+  private applyCorrection(args: {
+    input: RememberInput;
+    ownerId: string;
+    eventId: string;
+    correction: NonNullable<ReturnType<typeof extractCorrectionIntent>>;
+  }): RememberResult {
+    if (!args.input.ownerId || args.ownerId === 'unattributed') {
+      return { eventId: args.eventId, status: 'skipped', reason: 'identity_unstable_for_correction' };
+    }
+    const target = this.resolveCorrectionTarget(args.ownerId, args.input.recentMemoryIds);
+    if (!target) return { eventId: args.eventId, status: 'skipped', reason: 'correction_target_required' };
+    if (target.ownerId !== args.ownerId) {
+      this.audit({
+        ownerId: args.ownerId,
+        kind: 'correction',
+        decision: { action: args.correction.action, rejected: true, targetMemoryId: target.id },
+        rationale: 'cross_owner_correction_rejected',
+        signal: { utterance: args.input.utterance },
+      });
+      return { eventId: args.eventId, memoryId: target.id, status: 'skipped', reason: 'cross_owner_rejected' };
+    }
+
+    if (args.correction.action === 'delete') {
+      this.db.deleteMemoryItem(target.id);
+      if (target.type === 'preference') this.recomputePrefSummary(target.ownerId, target.content.key);
+      this.auditCorrection(args, target.id, 'delete');
+      return { eventId: args.eventId, memoryId: target.id, status: 'deleted' };
+    }
+
+    if (args.correction.action === 'reattribute') {
+      if (!args.input.targetOwnerId) {
+        return { eventId: args.eventId, memoryId: target.id, status: 'skipped', reason: 'target_owner_required' };
+      }
+      const next = {
+        ...target,
+        ownerId: args.input.targetOwnerId,
+        namespace: `private:${args.input.targetOwnerId}`,
+        acl: { read: [args.input.targetOwnerId], write: [args.input.targetOwnerId], delete: [args.input.targetOwnerId] },
+      };
+      this.db.updateMemoryItem(next);
+      if (target.type === 'preference') {
+        this.recomputePrefSummary(target.ownerId, target.content.key);
+        this.recomputePrefSummary(next.ownerId, next.content.key);
+      }
+      this.auditCorrection(args, target.id, 'reattribute');
+      return { eventId: args.eventId, memoryId: target.id, status: 'reattributed' };
+    }
+
+    if (args.correction.action === 'update' && args.correction.replacement) {
+      const next = {
+        ...target,
+        content: { ...target.content, value: args.correction.replacement },
+        confidence: Math.min(0.99, target.confidence + 0.05),
+        lastReinforced: Date.now(),
+      };
+      this.db.updateMemoryItem(next);
+      if (next.type === 'preference') this.recomputePrefSummary(next.ownerId, next.content.key);
+      this.auditCorrection(args, target.id, 'update');
+      return { eventId: args.eventId, memoryId: target.id, status: 'updated' };
+    }
+
+    const next = { ...target, confidence: Math.max(0, target.confidence - 0.3) };
+    this.db.updateMemoryItem(next);
+    this.auditCorrection(args, target.id, 'lower_confidence');
+    return { eventId: args.eventId, memoryId: target.id, status: 'updated' };
+  }
+
+  private resolveCorrectionTarget(ownerId: string, recentMemoryIds: string[] | undefined): MemoryItem | undefined {
+    for (const id of recentMemoryIds ?? []) {
+      const item = this.db.getMemoryItem(id);
+      if (item) return item;
+    }
+    return this.db.listOwnerMemories(ownerId, 1)[0];
+  }
+
+  private auditCorrection(
+    args: { input: RememberInput; ownerId: string; eventId: string; correction: NonNullable<ReturnType<typeof extractCorrectionIntent>> },
+    targetMemoryId: string,
+    action: string,
+  ): void {
+    this.audit({
+      ownerId: args.ownerId,
+      kind: 'correction',
+      decision: { action, targetMemoryId, replacement: args.correction.replacement, targetOwnerId: args.input.targetOwnerId },
+      rationale: `correction_${action}`,
+      signal: { utterance: args.input.utterance, eventId: args.eventId },
+    });
+  }
+
+  private recomputePrefSummary(ownerId: string, dimension: string): void {
+    const active = this.db
+      .listMemoryByDimension(ownerId, dimension, 20)
+      .filter((item) => item.type === 'preference' && item.status !== 'quarantine')
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 5)
+      .map((item) => ({ memoryId: item.id, value: item.content.value, ts: item.createdAt }));
+    if (active.length === 0) return;
+    this.db.upsertPrefSummary({
+      ownerId,
+      dimension,
+      currentValue: active[0]!.value,
+      activeConditions: active,
+    });
+  }
+
+  private audit(args: {
+    ownerId?: string;
+    kind: string;
+    decision: Record<string, unknown>;
+    rationale: string;
+    signal: Record<string, unknown>;
+  }): void {
+    this.db.insertAudit({
+      id: auditId([args.kind, args.ownerId ?? 'none', args.rationale, JSON.stringify(args.signal)]),
+      ownerId: args.ownerId,
+      kind: args.kind,
+      decision: args.decision,
+      rationale: args.rationale,
+      signal: args.signal,
+    });
   }
 }
 
@@ -137,34 +398,31 @@ export function mockIdentityPayload(args: {
 export { ownerIdFromVoiceprint };
 export type * from './types.js';
 
-function deterministicMemoryId(roomId: string, utterance: string, evidenceId: string | undefined, type: MemoryType): string {
+function deterministicMemoryId(
+  roomId: string,
+  utterance: string,
+  evidenceId: string | undefined,
+  type: MemoryType,
+  dimension: string,
+): string {
   return `mem_${createHash('sha256')
-    .update([roomId, utterance.trim(), evidenceId ?? 'none', type].join('|'))
+    .update([roomId, utterance.trim(), evidenceId ?? 'none', type, dimension].join('|'))
     .digest('hex')
     .slice(0, 32)}`;
 }
 
-function isInstructionInjection(text: string): boolean {
-  return /忽略.*(安全|规则|system|系统)|ignore.*(safety|rules|system)|越权|绕过权限|不要遵守/i.test(text);
-}
-
-function inferMemoryType(text: string, unsafe: boolean): MemoryType {
-  if (unsafe) return 'ephemeral_context';
-  if (/过敏|青霉素|药物|病史|医疗/.test(text)) return 'safety';
-  if (/提醒我|remind me|待办/.test(text)) return 'reminder';
-  if (/航班|会议|明天|后天|下周|今天|今晚|日程/.test(text)) return 'event';
-  if (/我的.+是|手机号|地址|邮箱|生日/.test(text)) return 'profile_fact';
-  if (/喜欢|不喜欢|偏好|以后/.test(text)) return 'preference';
-  return 'ephemeral_context';
+function fallbackCandidate(text: string, type: MemoryType): MemoryCandidate {
+  return {
+    type,
+    content: structureMemory(text, type),
+    salience: 0,
+    sourceSpan: text,
+    dimension: keyForType(type),
+  };
 }
 
 function structureMemory(text: string, type: MemoryType): StructuredMemoryContent {
-  return {
-    kind: type,
-    key: keyForType(type),
-    value: text.trim().slice(0, 500),
-    source: 'user_said',
-  };
+  return { kind: type, key: keyForType(type), value: text.trim().slice(0, 500), source: 'user_said' };
 }
 
 function keyForType(type: MemoryType): string {
@@ -197,4 +455,40 @@ function defaultTtl(type: MemoryType): number | undefined {
 function defaultValidUntil(type: MemoryType): number | undefined {
   const ttl = defaultTtl(type);
   return ttl ? Date.now() + ttl : undefined;
+}
+
+function prefSummaryToMemoryItem(summary: {
+  ownerId: string;
+  dimension: string;
+  currentValue: string;
+  activeConditions: Array<{ memoryId: string; value: string; ts: number }>;
+  updatedAt: number;
+}): MemoryItem {
+  return {
+    id: `pref_${createHash('sha256').update(`${summary.ownerId}:${summary.dimension}`).digest('hex').slice(0, 20)}`,
+    ownerId: summary.ownerId,
+    namespace: `private:${summary.ownerId}`,
+    type: 'preference',
+    content: {
+      kind: 'preference',
+      key: summary.dimension,
+      value: summary.currentValue,
+      source: 'user_said',
+    },
+    sourceRole: 'user',
+    sourceSpan: summary.currentValue,
+    confidence: 0.8,
+    status: 'committed',
+    createdAt: summary.updatedAt,
+    lastReinforced: summary.updatedAt,
+    provenance: { prefSummary: true, activeConditions: summary.activeConditions },
+    acl: { read: [summary.ownerId], write: [summary.ownerId], delete: [summary.ownerId] },
+  };
+}
+
+let lastNow = 0;
+function monotonicNow(): number {
+  const now = Date.now();
+  lastNow = now <= lastNow ? lastNow + 1 : now;
+  return lastNow;
 }

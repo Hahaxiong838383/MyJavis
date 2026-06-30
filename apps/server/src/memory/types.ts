@@ -116,12 +116,15 @@ export interface RememberInput {
   asrConfidence?: number;
   sourceSpan?: string;
   ts?: number;
+  recentMemoryIds?: string[];
+  targetOwnerId?: string;
 }
 
 export interface RememberResult {
   eventId: string;
   memoryId?: string;
-  status: 'stored' | 'quarantined' | 'skipped';
+  status: 'stored' | 'updated' | 'deleted' | 'reattributed' | 'quarantined' | 'skipped';
+  decision?: AdmissionDecision;
   reason?: string;
 }
 
@@ -132,4 +135,35 @@ export interface Memory {
 
 export interface IdentityProviderAdapter {
   resolve(payload: VolcSpeakerPayload): IdentityResolution;
+}
+
+export interface MemoryCandidate {
+  type: MemoryType;
+  content: StructuredMemoryContent;
+  salience: number;
+  sourceSpan: string;
+  dimension: string;
+  ttl?: number;
+  validUntil?: number;
+  requiresConfirmation?: boolean;
+}
+
+export type AdmissionAction = 'ignore' | 'store' | 'update' | 'promote' | 'decay';
+
+export interface AdmissionDecision {
+  action: AdmissionAction;
+  type: MemoryType;
+  confidence: number;
+  conflicts: string[];
+  rationale: string;
+  status?: MemoryStatus;
+}
+
+export type CorrectionAction = 'delete' | 'update' | 'reattribute' | 'lower_confidence';
+
+export interface CorrectionIntent {
+  action: CorrectionAction;
+  span: string;
+  replacement?: string;
+  targetOwnerId?: string;
 }
