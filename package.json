@@ -1,0 +1,16 @@
+{
+  "name": "myjavis",
+  "private": true,
+  "version": "0.0.1",
+  "description": "MyJavis — 实时语音对话 Agent（带记忆系统），抽取自 P003 火山 RTC 底座",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:server": "pnpm --filter @myjavis/server dev",
+    "dev:web": "pnpm --filter @myjavis/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
