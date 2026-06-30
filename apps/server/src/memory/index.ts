@@ -5,8 +5,10 @@ import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
 import type {
+  GovernanceResult,
   IdentityProviderAdapter,
   Memory,
+  MemoryExport,
   MemoryItem,
   MemoryStatus,
   MemoryType,
@@ -27,6 +29,68 @@ export class MyJavisMemory implements Memory {
     private readonly db: SQLiteMemoryStorage,
     private readonly events: EventLog,
   ) {}
+
+  async listByOwner(ownerId: string): Promise<MemoryItem[]> {
+    return this.db.listMemoriesByOwner(ownerId);
+  }
+
+  async exportOwner(ownerId: string): Promise<MemoryExport> {
+    return {
+      ownerId,
+      exportedAt: Date.now(),
+      memories: this.db.listMemoriesByOwner(ownerId),
+    };
+  }
+
+  async suspend(ownerId: string, memoryId: string): Promise<GovernanceResult> {
+    const item = this.db.getMemoryItem(memoryId);
+    if (!item) return { ok: false, reason: 'not_found', memoryId };
+    if (item.ownerId !== ownerId) return this.rejectCrossOwner('suspend', ownerId, item);
+    this.db.setMemorySuspended(memoryId, true);
+    if (item.type === 'preference') this.recomputePrefSummary(ownerId, item.content.key);
+    this.auditGovernance('suspend', ownerId, memoryId);
+    return { ok: true, memoryId };
+  }
+
+  async resume(ownerId: string, memoryId: string): Promise<GovernanceResult> {
+    const item = this.db.getMemoryItem(memoryId);
+    if (!item) return { ok: false, reason: 'not_found', memoryId };
+    if (item.ownerId !== ownerId) return this.rejectCrossOwner('resume', ownerId, item);
+    this.db.setMemorySuspended(memoryId, false);
+    if (item.type === 'preference') this.recomputePrefSummary(ownerId, item.content.key);
+    this.auditGovernance('resume', ownerId, memoryId);
+    return { ok: true, memoryId };
+  }
+
+  async delete(ownerId: string, memoryId: string): Promise<GovernanceResult> {
+    const item = this.db.getMemoryItem(memoryId);
+    if (!item) return { ok: false, reason: 'not_found', memoryId };
+    if (item.ownerId !== ownerId) return this.rejectCrossOwner('delete', ownerId, item);
+    this.db.deleteMemoryItem(memoryId);
+    if (item.type === 'preference') this.recomputePrefSummary(ownerId, item.content.key);
+    this.auditGovernance('delete', ownerId, memoryId);
+    return { ok: true, memoryId };
+  }
+
+  async reassign(ownerId: string, memoryId: string, targetOwnerId: string): Promise<GovernanceResult> {
+    if (!targetOwnerId) return { ok: false, reason: 'target_owner_required', memoryId };
+    const item = this.db.getMemoryItem(memoryId);
+    if (!item) return { ok: false, reason: 'not_found', memoryId };
+    if (item.ownerId !== ownerId) return this.rejectCrossOwner('reassign', ownerId, item);
+    const next: MemoryItem = {
+      ...item,
+      ownerId: targetOwnerId,
+      namespace: `private:${targetOwnerId}`,
+      acl: { read: [targetOwnerId], write: [targetOwnerId], delete: [targetOwnerId] },
+    };
+    this.db.updateMemoryItem(next);
+    if (item.type === 'preference') {
+      this.recomputePrefSummary(ownerId, item.content.key);
+      this.recomputePrefSummary(targetOwnerId, item.content.key);
+    }
+    this.auditGovernance('reassign', ownerId, memoryId, { targetOwnerId });
+    return { ok: true, memoryId };
+  }
 
   async recall(q: RecallQuery): Promise<RecallResult> {
     const started = performance.now();
@@ -342,11 +406,14 @@ export class MyJavisMemory implements Memory {
   private recomputePrefSummary(ownerId: string, dimension: string): void {
     const active = this.db
       .listMemoryByDimension(ownerId, dimension, 20)
-      .filter((item) => item.type === 'preference' && item.status !== 'quarantine')
+      .filter((item) => item.type === 'preference' && item.status !== 'quarantine' && !item.suspended)
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 5)
       .map((item) => ({ memoryId: item.id, value: item.content.value, ts: item.createdAt }));
-    if (active.length === 0) return;
+    if (active.length === 0) {
+      this.db.deletePrefSummary(ownerId, dimension);
+      return;
+    }
     this.db.upsertPrefSummary({
       ownerId,
       dimension,
@@ -369,6 +436,21 @@ export class MyJavisMemory implements Memory {
       decision: args.decision,
       rationale: args.rationale,
       signal: args.signal,
+    });
+  }
+
+  private rejectCrossOwner(action: string, ownerId: string, item: MemoryItem): GovernanceResult {
+    this.auditGovernance(action, ownerId, item.id, { rejected: true, actualOwnerId: item.ownerId });
+    return { ok: false, reason: 'cross_owner_rejected', memoryId: item.id };
+  }
+
+  private auditGovernance(action: string, ownerId: string, memoryId: string, extra: Record<string, unknown> = {}): void {
+    this.audit({
+      ownerId,
+      kind: 'governance',
+      decision: { action, memoryId, ...extra },
+      rationale: `governance_${action}`,
+      signal: { memoryId, ...extra },
     });
   }
 }
