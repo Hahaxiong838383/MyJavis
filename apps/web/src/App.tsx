@@ -25,17 +25,15 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <header style={styles.header}>
-        <h1 style={styles.title}>MyJavis</h1>
-        <span style={styles.subtitle}>实时语音助手 · 火山 RTC 骨架</span>
-      </header>
-
-      <main style={styles.main}>
+      <div style={styles.orbZone}>
         <PulseOrb
           phase={voiceStatus}
           label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]}
           getAudioTrack={getAudioTrack}
         />
+      </div>
+
+      <main style={styles.main}>
 
         <div style={styles.captions}>
           {userSubtitle && (
@@ -85,14 +83,14 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: '100dvh',
     display: 'flex',
     flexDirection: 'column',
-    background: '#0b0f17',
+    // 与 PulseOrb 画布世界同色：脉冲区顶满边缘后整个 app 融为一体（连贯氛围）
+    background: '#04060c',
     color: '#e5e7eb',
     fontFamily: 'system-ui, -apple-system, "PingFang SC", sans-serif',
   },
-  header: { padding: '24px', textAlign: 'center' },
-  title: { margin: 0, fontSize: 28, letterSpacing: 1 },
-  subtitle: { fontSize: 13, color: '#9ca3af' },
-  main: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, padding: 24 },
+  // 脉冲区：顶部+两侧顶满 app 边缘，占上半屏
+  orbZone: { width: '100%', height: 'min(58dvh, 560px)', flexShrink: 0 },
+  main: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22, padding: '8px 24px 24px' },
   captions: { minHeight: 64, maxWidth: 520, textAlign: 'center' },
   userLine: { margin: '6px 0', color: '#93c5fd', fontSize: 15 },
   botLine: { margin: '6px 0', color: '#e5e7eb', fontSize: 17 },

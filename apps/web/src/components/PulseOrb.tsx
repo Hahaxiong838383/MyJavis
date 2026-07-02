@@ -150,7 +150,7 @@ const PulseOrb = forwardRef<PulseOrbHandle, PulseOrbProps>(function PulseOrb({ p
   return (
     <div style={styles.shell} aria-label={`Javis Pulse ${phase}`}>
       <canvas ref={canvasRef} style={styles.canvas} />
-      <div style={styles.brand}>Javis Pulse</div>
+      <div style={styles.brand}>Javis</div>
       <div style={styles.badge}>{label ?? phaseLabel(phase)}</div>
     </div>
   );
@@ -417,13 +417,14 @@ function drawWave(
   thinking: boolean,
 ): void {
   ctx.beginPath();
-  const span = Math.min(width, 1100);
+  // 横向波形贯穿全宽到 app 边缘（连贯氛围）：中间受球能量影响最强，两端保留基础波动不归零
+  const span = width;
   const x0 = cx - span / 2;
   const steps = 160;
   for (let step = 0; step <= steps; step += 1) {
     const fraction = step / steps;
     const x = x0 + fraction * span;
-    const envelope = Math.sin(fraction * Math.PI) ** 1.4;
+    const envelope = 0.22 + 0.78 * Math.sin(fraction * Math.PI) ** 1.2;
     const wave =
       Math.sin(fraction * Math.PI * 2 * lobes + time * (thinking ? 1.8 : 4)) * 0.6 +
       Math.sin(fraction * Math.PI * 2 * lobes * 0.5 - time * 2.3) * 0.4;
@@ -451,14 +452,13 @@ declare global {
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  // 顶满容器（App 侧 orbZone 决定尺寸）：无圆角无边框，与 app 背景同色无缝，营造连贯氛围
   shell: {
     position: 'relative',
-    width: 'min(78vw, 360px)',
-    aspectRatio: '1 / 1',
-    borderRadius: '32px',
+    width: '100%',
+    height: '100%',
     overflow: 'hidden',
     background: '#04060c',
-    boxShadow: '0 28px 80px rgba(0,0,0,.35), inset 0 0 0 1px rgba(70,207,224,.12)',
   },
   canvas: {
     position: 'absolute',
