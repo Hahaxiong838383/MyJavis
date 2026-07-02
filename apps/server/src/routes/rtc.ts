@@ -73,16 +73,17 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
     },
     Config: {
       ASRConfig: {
+        // ⚠️ 与 P003 生产完全一致，不加多余字段——火山 preParamCheck 对 unknown fields 拒整段
+        //    （TTSConfig cluster 先例）。本项目踩过 StreamMode/FarfieldConfig/InterruptConfig →
+        //    ASR 降级成「字幕能出但不提交 LLM」，真人说话永远 listening（2026-07-02）。
+        //    远场/判停/声纹配置须按火山文档核实字段与层级后再加。
         Provider: 'volcano',
         ProviderParams: {
           Mode: 'bigmodel',
           AppId: process.env.VOLC_ASR_APP_ID,
           AccessToken: process.env.VOLC_ASR_ACCESS_TOKEN,
           ApiResourceId: process.env.VOLC_ASR_RESOURCE_ID || 'volc.bigasr.sauc.duration',
-          StreamMode: 0,
         },
-        FarfieldConfig: { Enable: true, Level: 'Medium' },
-        InterruptConfig: { InterruptSpeechDuration: 1500 },
       },
       TTSConfig: {
         Provider: 'volcano_bidirection',
