@@ -16,6 +16,7 @@ import { assemblePrompt } from '../prompt/orchestrator.js';
 import { createLlm } from '../providers/llm.js';
 import { getPromptOverride } from '../rtc-prompt-override.js';
 import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index.js';
+import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
 import type { ChatTurn } from '../providers/types.js';
 import type { VolcSpeakerPayload } from '../memory/types.js';
@@ -160,11 +161,29 @@ customLlmRoute.post('/chat/completions', async (c) => {
     enqueue(chunk({ role: 'assistant', content: '' }, null)); // OpenAI 规范：首 chunk 带 role
     try {
       let assistantText = '';
+      // 自适应承接句：窗口内 LLM 没出首字才插（语义选桶），快场景零开销。见 fillers.ts。
+      let firstTokenSeen = false;
+      const fillerTimer =
+        fillerConfig.enabled && userText.trim()
+          ? setTimeout(() => {
+              if (firstTokenSeen) return;
+              const filler = fillerPicker.pick(userText);
+              if (filler) {
+                assistantText += filler;
+                enqueue(chunk({ content: filler }, null));
+                console.log(`[filler] inserted "${filler}" (llm slow > ${fillerConfig.waitMs}ms)`);
+              }
+            }, fillerConfig.waitMs)
+          : null;
       await llm.streamChat({
         systemPrompt,
         userText,
         history,
         onDelta: (delta) => {
+          if (!firstTokenSeen) {
+            firstTokenSeen = true;
+            if (fillerTimer) clearTimeout(fillerTimer);
+          }
           turnTrace.markLlmFirstToken();
           assistantText += delta;
           enqueue(chunk({ content: delta }, null));
