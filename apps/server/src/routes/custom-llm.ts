@@ -161,20 +161,21 @@ customLlmRoute.post('/chat/completions', async (c) => {
     enqueue(chunk({ role: 'assistant', content: '' }, null)); // OpenAI 规范：首 chunk 带 role
     try {
       let assistantText = '';
-      // 自适应承接句：窗口内 LLM 没出首字才插（语义选桶），快场景零开销。见 fillers.ts。
+      // 承接句：waitMs=0 同步直插（省 setTimeout 宏任务延迟，SSE 首块即承接句）；
+      // >0 时为自适应窗口（LLM 首字先到则不插）。见 fillers.ts。
       let firstTokenSeen = false;
-      const fillerTimer =
-        fillerConfig.enabled && userText.trim()
-          ? setTimeout(() => {
-              if (firstTokenSeen) return;
-              const filler = fillerPicker.pick(userText);
-              if (filler) {
-                assistantText += filler;
-                enqueue(chunk({ content: filler }, null));
-                console.log(`[filler] inserted "${filler}" (llm slow > ${fillerConfig.waitMs}ms)`);
-              }
-            }, fillerConfig.waitMs)
-          : null;
+      const insertFiller = (): void => {
+        if (firstTokenSeen) return;
+        const filler = fillerPicker.pick(userText);
+        if (filler) {
+          assistantText += filler;
+          enqueue(chunk({ content: filler }, null));
+          console.log(`[filler] inserted "${filler}" (wait=${fillerConfig.waitMs}ms)`);
+        }
+      };
+      const fillerWanted = fillerConfig.enabled && Boolean(userText.trim());
+      if (fillerWanted && fillerConfig.waitMs <= 0) insertFiller();
+      const fillerTimer = fillerWanted && fillerConfig.waitMs > 0 ? setTimeout(insertFiller, fillerConfig.waitMs) : null;
       await llm.streamChat({
         systemPrompt,
         userText,

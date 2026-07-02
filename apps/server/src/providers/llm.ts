@@ -44,6 +44,63 @@ function thinkingDisabled(): boolean {
 }
 
 /**
+ * 流式语音净化器（TTS 出口兜底，与 prompt 禁写构成双保险——P003 avatar_action_word 同款范式）：
+ * - 剥括号段（（）()【】[]）：动作旁白/心理活动（（笑）（想了想））LLM 违规输出时不让 TTS 念；
+ *   括号内容缓冲，闭合即丢；超 40 字判定为正文括号（非旁白）原样回吐，误伤有上限。
+ * - 剥 Markdown 符号（* # `）与 emoji：TTS 念不了还可能干扰断句。
+ * 单字符判定无跨 chunk 前缀问题（不同于 <think> 多字符标签）。
+ */
+function createSpeechSanitizer(): { process: (raw: string) => string; flush: () => string } {
+  const OPEN: Record<string, true> = { '（': true, '(': true, '【': true, '[': true };
+  const CLOSE: Record<string, true> = { '）': true, ')': true, '】': true, ']': true };
+  const isEmoji = (cp: number): boolean =>
+    (cp >= 0x1f000 && cp <= 0x1faff) || (cp >= 0x2600 && cp <= 0x27bf) || cp === 0xfe0f || (cp >= 0x1f1e6 && cp <= 0x1f1ff);
+  let inParen = false;
+  let openCh = '';
+  let parenBuf = '';
+  return {
+    process(raw: string): string {
+      let out = '';
+      for (const ch of raw) {
+        if (inParen) {
+          if (CLOSE[ch]) {
+            inParen = false;
+            parenBuf = ''; // 旁白段整体丢弃
+            continue;
+          }
+          parenBuf += ch;
+          if (parenBuf.length > 40) {
+            out += openCh + parenBuf; // 超长=正文括号，回吐（连同开括号）
+            inParen = false;
+            parenBuf = '';
+          }
+          continue;
+        }
+        if (OPEN[ch]) {
+          inParen = true;
+          openCh = ch;
+          parenBuf = '';
+          continue;
+        }
+        if (ch === '*' || ch === '#' || ch === '`') continue;
+        const cp = ch.codePointAt(0) ?? 0;
+        if (isEmoji(cp)) continue;
+        out += ch;
+      }
+      return out;
+    },
+    /** 流结束时回吐未闭合括号段（当正文），防止「详见清单（第三条」这类断尾被吞。 */
+    flush(): string {
+      if (!inParen) return '';
+      const tail = parenBuf ? openCh + parenBuf : '';
+      inParen = false;
+      parenBuf = '';
+      return tail;
+    },
+  };
+}
+
+/**
  * 流式剥 <think>…</think>（MiniMax M 系把思考混在 content 里且关不掉——不剥则 TTS 念思考过程）。
  * 跨 chunk 边界安全：疑似标签前缀时先扣住不放行，凑齐再判。对无 think 的模型（DeepSeek）零改变。
  */
@@ -139,6 +196,7 @@ async function streamOne(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const stripThink = createThinkStripper();
+  const sanitize = createSpeechSanitizer();
   let buffer = '';
   let full = '';
   let claimed = false;
@@ -161,7 +219,7 @@ async function streamOne(
         };
         const delta = evt.choices?.[0]?.delta?.content;
         if (!delta) continue;
-        const visible = stripThink(delta);
+        const visible = sanitize.process(stripThink(delta));
         if (!visible) continue;
         if (!claimed) {
           if (!claim()) return; // 另一路已胜出，本路静默退出（对方会 abort 本路）
@@ -173,6 +231,15 @@ async function streamOne(
         /* 忽略噪声 chunk */
       }
     }
+  }
+  const tail = sanitize.flush();
+  if (tail) {
+    if (!claimed) {
+      if (!claim()) return;
+      claimed = true;
+    }
+    full += tail;
+    args.onDelta(tail);
   }
   if (claimed) args.onDone(full.trim());
   else if (claim()) args.onDone(full.trim()); // 空回复也算完成（极罕见），避免整轮悬空
