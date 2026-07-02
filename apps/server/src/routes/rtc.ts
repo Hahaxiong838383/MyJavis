@@ -36,6 +36,7 @@ const RTC_VERSION = '2024-12-01';
 // 火山 CustomLLM 回调地址：必须公网 HTTPS（火山云回调我方大脑端点）。本地验证可设隧道地址。
 const CUSTOM_LLM_URL = process.env.CUSTOM_LLM_URL || 'https://example.com/v1/chat/completions';
 const WELCOME = process.env.RTC_WELCOME_MESSAGE || '你好，我在听，有什么可以帮你的？';
+const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_TIME_MS ?? 450);
 
 /** 拼 custom-llm 回调 URL：?session=roomId（prompt override 键）+ 可选 ?user=（记忆注入键）。 */
 function buildCustomLlmUrl(roomId: string, userId?: string): string {
@@ -73,10 +74,8 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
     },
     Config: {
       ASRConfig: {
-        // ⚠️ 与 P003 生产完全一致，不加多余字段——火山 preParamCheck 对 unknown fields 拒整段
-        //    （TTSConfig cluster 先例）。本项目踩过 StreamMode/FarfieldConfig/InterruptConfig →
-        //    ASR 降级成「字幕能出但不提交 LLM」，真人说话永远 listening（2026-07-02）。
-        //    远场/判停/声纹配置须按火山文档核实字段与层级后再加。
+        // ⚠️ 字段必须有官方文档背书才能加——火山 preParamCheck 对本版本(2024-12-01)不认识的
+        //    字段拒整段（踩过 StreamMode=2025-06-01 版专属字段 → ASR 降级「出字幕不提交 LLM」）。
         Provider: 'volcano',
         ProviderParams: {
           Mode: 'bigmodel',
@@ -84,6 +83,9 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
           AccessToken: process.env.VOLC_ASR_ACCESS_TOKEN,
           ApiResourceId: process.env.VOLC_ASR_RESOURCE_ID || 'volc.bigasr.sauc.duration',
         },
+        // 判停时长（官方 PDF 页6553/7473：默认 600ms，快问答可调短；文档承认 600 对快节奏"体感延迟"）。
+        // 450 = 快接上；若句中思考停顿被切（抢话）→ 调回 500-550 或开 AIVAD。0 = 不发此字段（回滚）。
+        ...(VAD_SILENCE_MS > 0 ? { VADConfig: { SilenceTime: VAD_SILENCE_MS } } : {}),
       },
       TTSConfig: {
         Provider: 'volcano_bidirection',
