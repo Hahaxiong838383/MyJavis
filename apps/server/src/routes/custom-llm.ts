@@ -123,19 +123,15 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const systemPrompt =
     overridePrompt ?? (await turnTrace.measure('promptAssemblyMs', () => assemblePrompt({ memoriesAsData: contextBundle })));
 
+  // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
     `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
-      `${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}`,
+      `${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
+      ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
   );
-  const userEvent = userText.trim()
-    ? eventLog.appendUtterance({
-        roomId: sessionId ?? 'unknown-room',
-        speakerEvidenceId: identityResolution.evidence.id,
-        isFinal: true,
-        sourceRole: 'user',
-        utteranceText: userText,
-      })
-    : undefined;
+  // ⚠️ 用户发言的溯源写入延迟到「流正常完成且连接未被火山断开」（见 onDone）：
+  //    Prefill 开启后 interim 半句也会打进来，弃用的调用火山会 abort 连接——立即写入会污染
+  //    event_log/记忆（半句话当 final、串账）。abort 守卫对 barge-in 弃用响应同样正确。
 
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
@@ -190,7 +186,17 @@ customLlmRoute.post('/chat/completions', async (c) => {
           enqueue(chunk({ content: delta }, null));
         },
         onDone: () => {
-          if (userText.trim() && userEvent) {
+          // abort 守卫：火山弃用本次调用（Prefill 的 interim 版被 final 取代 / barge-in）时会断开
+          // 连接——此时跳过全部溯源与记忆写入，防止半句 interim 或没播出的回复污染系统。
+          const discarded = c.req.raw.signal.aborted;
+          if (!discarded && userText.trim()) {
+            const userEvent = eventLog.appendUtterance({
+              roomId: sessionId ?? 'unknown-room',
+              speakerEvidenceId: identityResolution.evidence.id,
+              isFinal: true,
+              sourceRole: 'user',
+              utteranceText: userText,
+            });
             void memory
               .remember({
                 ownerId: identityResolution.ownerId,
@@ -204,7 +210,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
               })
               .catch(() => {});
           }
-          if (assistantText.trim()) {
+          if (!discarded && assistantText.trim()) {
             eventLog.appendUtterance({
               roomId: sessionId ?? 'unknown-room',
               isFinal: true,
@@ -213,6 +219,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
               heardByUser: true,
             });
           }
+          if (discarded) console.log(`[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`);
           enqueue(chunk({}, 'stop'));
         },
         onError: (err) => enqueue(chunk({ content: `（助手出错了：${err.message}）` }, 'stop')),

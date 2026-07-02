@@ -37,6 +37,9 @@ const RTC_VERSION = '2024-12-01';
 const CUSTOM_LLM_URL = process.env.CUSTOM_LLM_URL || 'https://example.com/v1/chat/completions';
 const WELCOME = process.env.RTC_WELCOME_MESSAGE || '你好，我在听，有什么可以帮你的？';
 const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_TIME_MS ?? 450);
+// Prefill：火山把 ASR 中间结果提前发给 LLM"边听边想"（官方 PDF 页7401/7620，代价=额外模型调用）。
+// LLM_PREFILL=0 关闭（回滚点）。custom-llm 侧有 abort 守卫防 interim 污染记忆。
+const LLM_PREFILL = (process.env.LLM_PREFILL ?? '0') === '1';
 
 /** 拼 custom-llm 回调 URL：?session=roomId（prompt override 键）+ 可选 ?user=（记忆注入键）。 */
 function buildCustomLlmUrl(roomId: string, userId?: string): string {
@@ -110,6 +113,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
         ModelName: 'myjavis',
         APIKey: process.env.CUSTOM_LLM_API_KEY || 'none',
         SystemMessages: [],
+        ...(LLM_PREFILL ? { Prefill: true } : {}),
       },
       InterruptMode: 0, // 0=可打断（全双工 barge-in）
     },
