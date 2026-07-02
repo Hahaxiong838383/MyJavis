@@ -85,87 +85,146 @@ function createThinkStripper(): (raw: string) => string {
   };
 }
 
+interface LlmEndpoint {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+/** 可选兜底端点（配了即开启双路赛马）：LLM_FALLBACK_BASE_URL / _API_KEY / _MODEL。 */
+function fallbackEndpoint(): LlmEndpoint | null {
+  const baseUrl = process.env.LLM_FALLBACK_BASE_URL;
+  const apiKey = process.env.LLM_FALLBACK_API_KEY;
+  const model = process.env.LLM_FALLBACK_MODEL;
+  if (!baseUrl || !apiKey || !model) return null;
+  return { name: `fallback:${model}`, baseUrl, apiKey, model };
+}
+
+/** 单路流式请求。onFirstVisible 在首个可见(剥think后) token 前调用，返回 false 表示本路已落败应静默丢弃。 */
+async function streamOne(
+  ep: LlmEndpoint,
+  args: LlmStreamArgs,
+  controller: AbortController,
+  claim: () => boolean,
+): Promise<void> {
+  const res = await fetch(`${ep.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ep.apiKey}`,
+    },
+    signal: controller.signal,
+    body: JSON.stringify({
+      model: ep.model,
+      stream: true,
+      stream_options: { include_usage: true },
+      temperature: temperature(),
+      max_tokens: maxTokensFor(ep.model),
+      ...(thinkingDisabled() ? { thinking: { type: 'disabled' } } : {}),
+      messages: [
+        { role: 'system', content: args.systemPrompt },
+        ...args.history,
+        { role: 'user', content: args.userText },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`LLM 请求失败(${ep.name}) status=${res.status} ${errText.slice(0, 240)}`);
+  }
+  if (!res.body) throw new Error(`LLM 流响应体为空(${ep.name})`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const stripThink = createThinkStripper();
+  let buffer = '';
+  let full = '';
+  let claimed = false;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) continue;
+      const chunk = line.slice(5).trim();
+      if (!chunk || chunk === '[DONE]') continue;
+      try {
+        const evt = JSON.parse(chunk) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+        };
+        const delta = evt.choices?.[0]?.delta?.content;
+        if (!delta) continue;
+        const visible = stripThink(delta);
+        if (!visible) continue;
+        if (!claimed) {
+          if (!claim()) return; // 另一路已胜出，本路静默退出（对方会 abort 本路）
+          claimed = true;
+        }
+        full += visible;
+        args.onDelta(visible);
+      } catch {
+        /* 忽略噪声 chunk */
+      }
+    }
+  }
+  if (claimed) args.onDone(full.trim());
+  else if (claim()) args.onDone(full.trim()); // 空回复也算完成（极罕见），避免整轮悬空
+}
+
 class OpenAiCompatLlm implements LlmProvider {
   async streamChat(args: LlmStreamArgs): Promise<void> {
-    const { baseUrl, apiKey, model } = config.llm;
+    const main: LlmEndpoint = {
+      name: `main:${config.llm.model}`,
+      baseUrl: config.llm.baseUrl,
+      apiKey: config.llm.apiKey,
+      model: config.llm.model,
+    };
+    const fb = fallbackEndpoint();
+    const started = performance.now();
 
-    // 外部传入的 signal（barge-in 中断）优先；否则本地建一个用于清理。
-    const controller = new AbortController();
-    const onAbort = (): void => controller.abort();
+    // 每路独立 controller；外部 barge-in signal 传播到所有路。
+    const racers = (fb ? [main, fb] : [main]).map((ep) => ({ ep, controller: new AbortController() }));
+    const abortAll = (): void => racers.forEach((r) => r.controller.abort());
     if (args.signal) {
-      if (args.signal.aborted) controller.abort();
-      else args.signal.addEventListener('abort', onAbort, { once: true });
+      if (args.signal.aborted) abortAll();
+      else args.signal.addEventListener('abort', abortAll, { once: true });
     }
 
-    try {
-      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          stream: true,
-          stream_options: { include_usage: true },
-          temperature: temperature(),
-          max_tokens: maxTokensFor(model),
-          ...(thinkingDisabled() ? { thinking: { type: 'disabled' } } : {}),
-          messages: [
-            { role: 'system', content: args.systemPrompt },
-            ...args.history,
-            { role: 'user', content: args.userText },
-          ],
-        }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(`LLM 请求失败 status=${res.status} ${errText.slice(0, 240)}`);
+    // 赛马裁决：首个吐可见 token 的路胜出，其余立即 abort（省 token 也防双播）。
+    let winner: string | null = null;
+    const claimFor = (mine: { ep: LlmEndpoint; controller: AbortController }) => (): boolean => {
+      if (winner !== null) return winner === mine.ep.name;
+      winner = mine.ep.name;
+      racers.filter((r) => r !== mine).forEach((r) => r.controller.abort());
+      if (fb) {
+        console.log(`[llm] race won by ${mine.ep.name} ttft=${Math.round(performance.now() - started)}ms`);
       }
-      if (!res.body) throw new Error('LLM 流响应体为空');
+      return true;
+    };
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      const stripThink = createThinkStripper();
-      let buffer = '';
-      let full = '';
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line.startsWith('data:')) continue;
-          const chunk = line.slice(5).trim();
-          if (!chunk || chunk === '[DONE]') continue;
-          try {
-            const evt = JSON.parse(chunk) as {
-              choices?: Array<{ delta?: { content?: string } }>;
-            };
-            const delta = evt.choices?.[0]?.delta?.content;
-            if (!delta) continue;
-            const visible = stripThink(delta);
-            if (!visible) continue;
-            full += visible;
-            args.onDelta(visible);
-          } catch {
-            /* 忽略噪声 chunk */
-          }
+    const errors: Error[] = [];
+    await Promise.all(
+      racers.map(async (r) => {
+        try {
+          await streamOne(r.ep, args, r.controller, claimFor(r));
+        } catch (err) {
+          if (r.controller.signal.aborted) return; // 被裁决/barge-in 掐掉的不算错
+          errors.push(err instanceof Error ? err : new Error(String(err)));
         }
-      }
+      }),
+    );
+    args.signal?.removeEventListener('abort', abortAll);
 
-      args.onDone(full.trim());
-    } catch (err) {
-      if (controller.signal.aborted) return; // 主动中断不算错误（barge-in）
-      args.onError?.(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      args.signal?.removeEventListener('abort', onAbort);
+    // 全部落败（都失败且无人开腔）才报错；单路失败由另一路兜住。
+    if (winner === null && errors.length > 0 && !args.signal?.aborted) {
+      args.onError?.(errors[0]!);
     }
   }
 }
