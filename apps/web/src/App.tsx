@@ -17,7 +17,8 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
-  const { connected, connecting, connectPhase, error, needTapToPlay, start, stop, resumePlay } = useVoiceRtc();
+  const { connected, connecting, connectPhase, error, needTapToPlay, start, stop, resumePlay, getAudioTrack } =
+    useVoiceRtc();
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
@@ -30,7 +31,11 @@ export default function App() {
       </header>
 
       <main style={styles.main}>
-        <PulseOrb phase={voiceStatus} label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]} />
+        <PulseOrb
+          phase={voiceStatus}
+          label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]}
+          getAudioTrack={getAudioTrack}
+        />
 
         <div style={styles.captions}>
           {userSubtitle && (
@@ -69,7 +74,7 @@ export default function App() {
       </main>
 
       <footer style={styles.footer}>
-        需配置 <code>.env</code> 火山 RTC/ASR/TTS 后方可真机对话 · Pulse 本批使用本地麦克风电平占位
+        Pulse 由 RTC 双向真实声音驱动（我说话=麦克风轨 · Javis 说话=TTS 轨 · 音量/音调/停顿实时映射）
       </footer>
     </div>
   );

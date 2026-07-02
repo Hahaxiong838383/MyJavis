@@ -17,14 +17,20 @@ export interface PulseOrbHandle {
 export interface PulseOrbProps {
   phase: VoiceStatus;
   label?: string;
+  /**
+   * RTC 音轨提供者（useVoiceRtc.getAudioTrack）：listening 用 local（我的声音，复用 RTC
+   * 采集不二开麦克风），speaking 用 remote（Javis 的真实 TTS 波形，替代合成动画）。
+   * 未提供 / 轨道未就绪时优雅回退：mic 走 getUserMedia，speak 走合成。
+   */
+  getAudioTrack?: (kind: 'local' | 'remote') => MediaStreamTrack | undefined;
 }
 
-const PulseOrb = forwardRef<PulseOrbHandle, PulseOrbProps>(function PulseOrb({ phase, label }, ref) {
+const PulseOrb = forwardRef<PulseOrbHandle, PulseOrbProps>(function PulseOrb({ phase, label, getAudioTrack }, ref) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const signalsRef = useRef<PulseSignals>({ volume: 0, pitch: 0.42, rhythm: 0 });
   const modeRef = useRef<PulseMode>('idle');
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const streamRef = useRef<MediaStream | null>(null); // 仅 getUserMedia 回退流（可 stop）；RTC 轨道不入此处
   const audioContextRef = useRef<AudioContext | null>(null);
   const buffersRef = useRef<AudioBuffers | null>(null);
 
@@ -43,19 +49,41 @@ const PulseOrb = forwardRef<PulseOrbHandle, PulseOrbProps>(function PulseOrb({ p
 
   useEffect(() => {
     modeRef.current = mode;
-    if (mode !== 'mic') stopMic(streamRef, analyserRef, buffersRef);
   }, [mode]);
 
+  // 音频分析源按模式切换：mic→RTC local 轨(回退 getUserMedia)；speak→RTC remote 轨(bot TTS)。
+  // speak 轨道可能晚于状态就绪（首次订阅），重试拿轨（500ms×6）。
   useEffect(() => {
     let cancelled = false;
-    if (mode !== 'mic') return;
-    void startMic({ audioContextRef, analyserRef, streamRef, buffersRef }).then((ok) => {
-      if (cancelled && ok) stopMic(streamRef, analyserRef, buffersRef);
-    });
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    detachAnalyser(streamRef, analyserRef, buffersRef);
+
+    const wantKind = mode === 'mic' ? 'local' : mode === 'speak' ? 'remote' : null;
+    if (!wantKind) return;
+
+    const tryAttach = (attempt: number): void => {
+      if (cancelled) return;
+      const track = getAudioTrack?.(wantKind);
+      if (track) {
+        attachTrack(track, { audioContextRef, analyserRef, buffersRef });
+        return;
+      }
+      if (wantKind === 'local' && attempt === 0 && !getAudioTrack) {
+        // 无 RTC 环境（独立预览）才回退自开麦克风
+        void startMic({ audioContextRef, analyserRef, streamRef, buffersRef }).then((ok) => {
+          if (cancelled && ok) detachAnalyser(streamRef, analyserRef, buffersRef);
+        });
+        return;
+      }
+      if (attempt < 6) retryTimer = setTimeout(() => tryAttach(attempt + 1), 500);
+    };
+    tryAttach(0);
+
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [mode]);
+  }, [mode, getAudioTrack]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -114,7 +142,7 @@ const PulseOrb = forwardRef<PulseOrbHandle, PulseOrbProps>(function PulseOrb({ p
 
   useEffect(() => {
     return () => {
-      stopMic(streamRef, analyserRef, buffersRef);
+      detachAnalyser(streamRef, analyserRef, buffersRef);
       void audioContextRef.current?.close().catch(() => undefined);
     };
   }, []);
@@ -172,7 +200,48 @@ async function startMic(args: {
   }
 }
 
-function stopMic(
+/** 把一条 RTC 音轨接上 AnalyserNode（只 tap 分析，不影响 SDK 播放，绝不 stop RTC 轨道）。 */
+function attachTrack(
+  track: MediaStreamTrack,
+  refs: {
+    audioContextRef: React.MutableRefObject<AudioContext | null>;
+    analyserRef: React.MutableRefObject<AnalyserNode | null>;
+    buffersRef: React.MutableRefObject<AudioBuffers | null>;
+  },
+): void {
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const audioContext = refs.audioContextRef.current ?? new AudioContextCtor();
+    refs.audioContextRef.current = audioContext;
+    void audioContext.resume().catch(() => undefined);
+    const source = audioContext.createMediaStreamSource(new MediaStream([track]));
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    refs.analyserRef.current = analyser;
+    refs.buffersRef.current = {
+      time: new Float32Array(new ArrayBuffer(Float32Array.BYTES_PER_ELEMENT * analyser.fftSize)),
+      frequency: new Uint8Array(new ArrayBuffer(Uint8Array.BYTES_PER_ELEMENT * analyser.frequencyBinCount)),
+    };
+    console.log(`[pulse] analyser attached to ${track.label || track.id.slice(0, 8)}`);
+    // 轨道被 SDK 关闭（取消订阅/停采集）时自动摘除，readTargetSignals 回退合成
+    track.addEventListener(
+      'ended',
+      () => {
+        if (refs.analyserRef.current === analyser) {
+          refs.analyserRef.current = null;
+          refs.buffersRef.current = null;
+        }
+      },
+      { once: true },
+    );
+  } catch {
+    /* 分析失败静默降级（球走合成动画），不影响通话 */
+  }
+}
+
+/** 拆分析器。仅 stop 自开的 getUserMedia 流（streamRef）；RTC 轨道归 SDK 管，只断引用。 */
+function detachAnalyser(
   streamRef: React.MutableRefObject<MediaStream | null>,
   analyserRef: React.MutableRefObject<AnalyserNode | null>,
   buffersRef: React.MutableRefObject<AudioBuffers | null>,
@@ -190,14 +259,18 @@ function readTargetSignals(
   analyserRef: React.MutableRefObject<AnalyserNode | null>,
   buffersRef: React.MutableRefObject<AudioBuffers | null>,
 ): PulseSignals {
-  // TODO: 火山 enableAudioPropertiesReport 真接后，由外部通过 pushSignals 注入音量/音调/律动。
-  if (mode === 'speak') return synthSpeech(time, 1);
-  if (mode === 'think') return synthSpeech(time * 0.7, 0.28);
-  if (mode === 'mic') {
-    const fromMic = readMic(analyserRef.current, buffersRef.current, signalsRef.current.pitch);
-    if (fromMic.volume > 0) return fromMic;
+  // 有真实音轨（RTC local/remote 经 AnalyserNode）时完全信真实信号——静音也如实呈现
+  // （停顿=球回落，是特征不是缺陷），只垫极小底光防全黑；拿不到轨道才降级合成动画。
+  if (mode === 'speak' || mode === 'mic') {
+    if (analyserRef.current && buffersRef.current) {
+      const real = readMic(analyserRef.current, buffersRef.current, signalsRef.current.pitch);
+      const floor = 0.05 + Math.max(0, Math.sin(time * 1.6)) * 0.03; // 停顿时的微弱呼吸底光
+      return { ...real, volume: Math.max(real.volume, floor) };
+    }
+    if (mode === 'speak') return synthSpeech(time, 1); // 无远端轨道（降级）
     return { volume: 0.08 + Math.max(0, Math.sin(time * 2.1)) * 0.08, pitch: 0.45, rhythm: 0 };
   }
+  if (mode === 'think') return synthSpeech(time * 0.7, 0.28);
   return { volume: 0.02 + Math.max(0, Math.sin(time * 0.9)) * 0.035, pitch: 0.42, rhythm: 0 };
 }
 

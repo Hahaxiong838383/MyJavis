@@ -39,7 +39,16 @@ export interface UseVoiceRtc {
   start: (opts?: { systemPrompt?: string; userId?: string }) => Promise<void>;
   stop: () => Promise<void>;
   resumePlay: () => void;
+  /**
+   * 取 RTC 音轨给律动球做 WebAudio 分析（60fps RMS+谱质心，Web SDK 音频属性报告无
+   * voicePitch/spectrum 且仅 100ms 粒度，直接分析音轨更细）。
+   * local=我的麦克风采集轨（复用 RTC 采集，律动球不再二开 getUserMedia）；
+   * remote=Javis bot 的 TTS 下行轨。未连接/未订阅时返回 undefined（球回退合成动画）。
+   */
+  getAudioTrack: (kind: 'local' | 'remote') => MediaStreamTrack | undefined;
 }
+
+const BOT_USER_ID = 'myjavis_bot'; // 与 server rtc.ts AgentConfig.UserId 一致
 
 export function useVoiceRtc(): UseVoiceRtc {
   const setVoiceStatus = useAppStore((s) => s.setVoiceStatus);
@@ -49,6 +58,7 @@ export function useVoiceRtc(): UseVoiceRtc {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const engineRef = useRef<any>(null);
   const vertcRef = useRef<any>(null);
+  const streamIndexMainRef = useRef<any>(null); // rtcMod.StreamIndex.STREAM_INDEX_MAIN（SDK 加载后写入）
   const sessionRef = useRef<{ roomId: string; taskId: string; userId: string } | null>(null);
   const failedUsersRef = useRef<Set<string>>(new Set());
   /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -117,6 +127,7 @@ export function useVoiceRtc(): UseVoiceRtc {
         const VERTC = rtcMod.default;
         const { MediaType, RoomProfileType } = rtcMod;
         vertcRef.current = VERTC;
+        streamIndexMainRef.current = rtcMod.StreamIndex?.STREAM_INDEX_MAIN ?? 0;
         const engine = VERTC.createEngine(data.appId);
         engineRef.current = engine;
 
@@ -224,5 +235,20 @@ export function useVoiceRtc(): UseVoiceRtc {
     setUserSubtitle('');
   }, [setVoiceStatus, setSubtitle, setUserSubtitle]);
 
-  return { connected, connecting, connectPhase, error, needTapToPlay, start, stop, resumePlay };
+  const getAudioTrack = useCallback((kind: 'local' | 'remote'): MediaStreamTrack | undefined => {
+    const engine = engineRef.current;
+    const streamIndexMain = streamIndexMainRef.current;
+    if (!engine || streamIndexMain === null) return undefined;
+    try {
+      const track: MediaStreamTrack | undefined =
+        kind === 'local'
+          ? engine.getLocalStreamTrack(streamIndexMain, 'audio')
+          : engine.getRemoteStreamTrack(BOT_USER_ID, streamIndexMain, 'audio');
+      return track && track.readyState === 'live' ? track : undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
+  return { connected, connecting, connectPhase, error, needTapToPlay, start, stop, resumePlay, getAudioTrack };
 }
