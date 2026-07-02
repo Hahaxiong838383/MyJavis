@@ -4,16 +4,19 @@
 >
 > 技术底座抽取自 P003「小可」生产代码（火山引擎 RTC 全链路，真机 E2E 验证），剥离儿童陪伴业务，重做成通用个人助手。
 
-## 现状（2026-06-30）
+## 现状（2026-07-02）
 
-**设计已收敛、骨架可跑；记忆系统经 team 对抗评审转 MVP 减法，待实现。** 详见 [`HANDOFF`](HANDOFF.md)（本地）/ [`04-决策记录.md`](04-决策记录.md)。
+**设计收敛 + 记忆 MVP/治理/律动球/Tauri 壳四批已落 main（PR#15-18）；当前卡在真实火山凭据 + LLM 选型，给了即可起跑真人 E2E。** 详见 [`HANDOFF`](HANDOFF.md)（本地）/ [`04-决策记录.md`](04-决策记录.md)。
 
 | 层 | 状态 |
 |---|---|
 | ① 语音 I/O（火山 RTC 全双工/打断/ASR/TTS） | 🟢 骨架 E2E 跑通（server boot / health / SSE 真实 LLM 外呼） |
-| ② 身份（火山声纹，区分说话人） | 🟡 设计定档（默认 Mode2 识别≤3人 + 兜底 Mode1 强降噪），待接 |
-| ③ 记忆护城河（自建，本地 SQLite） | 🟡 设计 v2.0（MVP），代码 `NullMemoryStore` 占位待实现 |
-| ④ 前端律动（Javis Pulse） | 🟡 原型就绪（`apps/web/prototype/`），待抽组件接入 |
+| ② 身份（火山声纹，区分说话人） | 🟡 设计定档 + `rtc.ts` 声纹配置占位（Mode2 识别≤3人 / Mode1 降噪 / FarfieldConfig）；**payload 仍 mock**，待接真 |
+| ③ 记忆护城河（自建，本地 SQLite） | 🟢 MVP 已实现：身份证据层状态机 / 事件溯源 / typed 生命周期 / 确定性 admit / 冲突收敛 / 显式纠正，测试全绿（见 [`docs/IMPL-地基-进展.md`](docs/IMPL-地基-进展.md) + [`docs/IMPL-记忆智能-进展.md`](docs/IMPL-记忆智能-进展.md)） |
+| ④ 前端律动 + 治理（Javis Pulse） | 🟢 `PulseOrb.tsx` React 组件 + `GovernancePanel.tsx` + 治理 API（suspend/delete/reassign/export，ownerId ACL）已落；音频信号仍本地麦克风占位，待接火山音频属性报告 |
+| macOS 壳 | 🟢 Tauri 薄壳（9.68MB arm64）+ 图标；WKWebView getUserMedia 命门真机验通过 |
+
+Phase0 回放评测 16 样本：串账率 0 / 一次性事实保留率 1 / 注入抵抗率 1 / owner 泄漏 0（延迟字段仍为脚手架，非真实测量）。
 
 ## 四层架构
 
@@ -37,15 +40,22 @@
 | [`Javis-Pulse-前端律动可视化-v1.md`](docs/Javis-Pulse-前端律动可视化-v1.md) | 前端律动规格（+§13 火山集成） |
 | [`ARCHITECTURE-v2.md`](docs/ARCHITECTURE-v2.md) | 系统实现架构 v2.1 |
 | [`REVIEW-memory-team-2026-06-30.md`](docs/REVIEW-memory-team-2026-06-30.md) | team 对抗评审（grok+codex）综合 + cc 裁决 |
+| [`IMPL-地基-进展.md`](docs/IMPL-地基-进展.md) | 批次1 实施进展（SQLite schema/身份证据层/事件溯源/telemetry/Phase0 eval） |
+| [`IMPL-记忆智能-进展.md`](docs/IMPL-记忆智能-进展.md) | 批次2 实施进展（触发器/admit/typed 生命周期/冲突收敛/纠正） |
 
 > 火山 RTC 官方文档 PDF（105MB）因超 GitHub 限不入仓，需要时本地放回 `docs/`。
 
 ## 后续计划（逐层指标 gate）
 
-- **P0 Phase0 地基**（铁律"不做不开工"）：延迟拆分埋点 + 回放语料 + 指标（串账率 / 一次性关键事实保留率 / prompt injection 抵抗率）。
-- **P0 地基重做**：身份证据层（SpeakerEvidence 状态机）+ 事件溯源轮 + `rtc.ts` 接声纹配置 + custom-llm 接 `recall/remember` 两门面（记忆作 data）。
-- **P1**：SQLite WAL + typed_memory 表 + typed 生命周期 + 隐私治理入口 + 前端 Pulse 接入。
-- **MVP 暂缓**（指标证明缺口再加）：向量召回 / L2 三元组 / 人格 disposition / 反思内核 / 三路并行召回。
+- **P0 打通真实链路**（全被"凭据 + LLM 选型"卡着）：
+  1. LLM 选型（`config.ts` llm 空占位）+ 火山真实凭据填 `.env`（川哥拍板，阻塞全部真 E2E）；
+  2. 真实火山声纹 payload 替换 `mockIdentityPayload` + 契约回放测试；
+  3. 声纹注册流（RegisterVoicePrint OpenAPI）；
+  4. 真人语音 E2E（Tauri 壳内全双工 + 声纹真区分人 + 串账率真实测量）；
+  5. 火山音频属性报告（enableAudioPropertiesReport）接 PulseOrb `pushSignals`；
+  6. 火山云→server RTT 实测 + 真实 telemetry p95/p99 汇总。
+- **P1 记忆智能补全**：高风险实体确认流（手机号/地址/健康/金额）/ active_stable 阈值参数化 / 真 hot cache + 关键词检索 + pref_summary 收敛 / task+reminder 层 / 治理面板美化。
+- **MVP 暂缓**（指标证明缺口再加）：向量召回 / L2 三元组 / 人格 disposition / 反思内核 / 三路并行召回 / 重型夜间 reconcile。
 
 ## 快速开始
 
@@ -54,6 +64,9 @@ pnpm install
 cp .env.example .env       # 填火山 RTC/ASR/TTS + LLM 真值
 pnpm dev:server
 pnpm dev:web
+
+# macOS 桌面壳（Tauri，产 MyJavis.app）
+pnpm tauri:build
 ```
 
 ## 与相邻项目的区分
