@@ -48,11 +48,11 @@ export class FillerPicker {
 export const fillerConfig = {
   enabled: (process.env.FILLER_ENABLED ?? '1') !== '0',
   /**
-   * 自适应窗口：LLM 首 token 在窗口内到达则不插承接句。
-   * 校准依据：赛马正常 TTFT 中位 ~500-650ms（2026-07-02 生产实测）——窗口须高于快轮 p90，
-   * 否则每轮都插反而啰嗦；750ms = 快轮纯净直出、慢轮（DeepSeek 抖/兜底接管 >1.5s）才兜底。
+   * 承接句延迟窗口。默认 0 = 收到回调立即吐（川哥 2026-07-02 拍板：承接要像真人的
+   * 「嗯」一样瞬间接上，即时反馈优先于简洁）。设 >0 变自适应：LLM 首 token 在窗口内
+   * 到达则不插（曾试 750ms 快轮不插方案，听感上承接慢半拍，弃）。
    */
-  waitMs: Number(process.env.FILLER_WAIT_MS ?? 750),
+  waitMs: Number(process.env.FILLER_WAIT_MS ?? 0),
   probability: Number(process.env.FILLER_PROBABILITY ?? 1),
 };
 
