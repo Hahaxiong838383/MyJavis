@@ -43,6 +43,48 @@ function thinkingDisabled(): boolean {
   return (process.env.LLM_DISABLE_THINKING ?? '1') !== '0';
 }
 
+/**
+ * 流式剥 <think>…</think>（MiniMax M 系把思考混在 content 里且关不掉——不剥则 TTS 念思考过程）。
+ * 跨 chunk 边界安全：疑似标签前缀时先扣住不放行，凑齐再判。对无 think 的模型（DeepSeek）零改变。
+ */
+function createThinkStripper(): (raw: string) => string {
+  let buf = '';
+  let inThink = false;
+  return (raw: string): string => {
+    buf += raw;
+    let out = '';
+    for (;;) {
+      if (inThink) {
+        const end = buf.indexOf('</think>');
+        if (end === -1) {
+          // think 内容全吞；留尾部防 '</thi' 跨 chunk 断裂
+          buf = buf.slice(Math.max(0, buf.length - 8));
+          return out;
+        }
+        buf = buf.slice(end + '</think>'.length);
+        inThink = false;
+      }
+      const start = buf.indexOf('<think>');
+      if (start === -1) {
+        // 无完整开标签：若尾部是 '<think>' 的前缀（如 '<thi'）则扣住等下一 chunk
+        let hold = 0;
+        for (let k = Math.min(7, buf.length); k > 0; k--) {
+          if ('<think>'.startsWith(buf.slice(buf.length - k))) {
+            hold = k;
+            break;
+          }
+        }
+        out += buf.slice(0, buf.length - hold);
+        buf = buf.slice(buf.length - hold);
+        return out;
+      }
+      out += buf.slice(0, start);
+      buf = buf.slice(start + '<think>'.length);
+      inThink = true;
+    }
+  };
+}
+
 class OpenAiCompatLlm implements LlmProvider {
   async streamChat(args: LlmStreamArgs): Promise<void> {
     const { baseUrl, apiKey, model } = config.llm;
@@ -86,6 +128,7 @@ class OpenAiCompatLlm implements LlmProvider {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      const stripThink = createThinkStripper();
       let buffer = '';
       let full = '';
 
@@ -107,8 +150,10 @@ class OpenAiCompatLlm implements LlmProvider {
             };
             const delta = evt.choices?.[0]?.delta?.content;
             if (!delta) continue;
-            full += delta;
-            args.onDelta(delta);
+            const visible = stripThink(delta);
+            if (!visible) continue;
+            full += visible;
+            args.onDelta(visible);
           } catch {
             /* 忽略噪声 chunk */
           }
