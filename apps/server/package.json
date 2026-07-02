@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/rtc-token.cjs dist/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:storage": "tsx scripts/storage.test.ts",
     "test:identity": "tsx scripts/identity.test.ts",

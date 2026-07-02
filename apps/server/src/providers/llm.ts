@@ -34,6 +34,15 @@ function temperature(): number {
   return Number.isFinite(n) ? n : 1.0;
 }
 
+/**
+ * 关闭端点侧 reasoning（DeepSeek v4 实测 TTFT 减半：2.4s→~1s；kidshub 同款验证 2.7s→1.1s）。
+ * 语音链路只消费 delta.content，reasoning 段纯拖开口延迟。默认开；端点不认此字段时
+ * LLM_DISABLE_THINKING=0 关闭（DeepSeek 生效 / MiniMax 接受但忽略，均不报错）。
+ */
+function thinkingDisabled(): boolean {
+  return (process.env.LLM_DISABLE_THINKING ?? '1') !== '0';
+}
+
 class OpenAiCompatLlm implements LlmProvider {
   async streamChat(args: LlmStreamArgs): Promise<void> {
     const { baseUrl, apiKey, model } = config.llm;
@@ -60,6 +69,7 @@ class OpenAiCompatLlm implements LlmProvider {
           stream_options: { include_usage: true },
           temperature: temperature(),
           max_tokens: maxTokensFor(model),
+          ...(thinkingDisabled() ? { thinking: { type: 'disabled' } } : {}),
           messages: [
             { role: 'system', content: args.systemPrompt },
             ...args.history,
