@@ -11,12 +11,25 @@
  */
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
 import { governanceRoute } from './routes/governance.js';
 
 const app = new Hono();
 const port = Number(process.env.PORT ?? 3001);
+
+// CORS 放开 origin（Tauri tauri://localhost / 本地 dev 各端都要来）；CORS 不是安全边界，真防线是下方 key。
+app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'X-Javis-Key', 'Authorization'] }));
+
+// /api/* 鉴权：JAVIS_API_KEY 设了才校验（本地 dev 不设不拦）；/v1 有自己的 CUSTOM_LLM_API_KEY 门。
+app.use('/api/*', async (c, next) => {
+  const required = process.env.JAVIS_API_KEY;
+  if (required && c.req.header('x-javis-key') !== required) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401);
+  }
+  await next();
+});
 
 app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server' }));
 app.route('/api/rtc', rtcRoute);

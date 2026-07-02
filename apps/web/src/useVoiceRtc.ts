@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { useAppStore } from './store';
+import { apiFetch } from './api';
 
 /**
  * 火山 RTC 实时对话 Hook（抽取自 P003 useVolcRtc.ts，剥离登录/吐槽/kidshub）。
@@ -91,7 +92,7 @@ export function useVoiceRtc(): UseVoiceRtc {
       setError(null);
       setNeedTapToPlay(false);
       try {
-        const res = await fetch('/api/rtc/start', {
+        const res = await apiFetch('/api/rtc/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -206,7 +207,7 @@ export function useVoiceRtc(): UseVoiceRtc {
     }
     const sess = sessionRef.current;
     if (sess) {
-      void fetch('/api/rtc/stop', {
+      void apiFetch('/api/rtc/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId: sess.roomId, taskId: sess.taskId }),

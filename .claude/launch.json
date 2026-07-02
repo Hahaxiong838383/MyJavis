@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "myjavis-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "/Users/rayman.chen/mycc/2-Projects/MyJavis", "dev:web"],
+      "port": 5173
+    }
+  ]
+}

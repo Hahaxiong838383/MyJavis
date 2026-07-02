@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { apiFetch } from '../api';
 
 interface MemoryItemDto {
   id: string;
@@ -37,7 +38,7 @@ export function GovernancePanel() {
     }
     setLoading(true);
     try {
-      const data = (await fetch(`/api/governance?owner=${encodeURIComponent(owner)}`).then((res) => res.json())) as ListResponse;
+      const data = (await apiFetch(`/api/governance?owner=${encodeURIComponent(owner)}`).then((res) => res.json())) as ListResponse;
       if (!data.ok) throw new Error(data.error || '加载失败');
       setMemories(data.memories ?? []);
       setSelectedId(null);
@@ -55,7 +56,7 @@ export function GovernancePanel() {
     setLoading(true);
     try {
       if (action === 'export') {
-        const data = await fetch(`/api/governance/export?owner=${encodeURIComponent(owner)}`).then((res) => res.json());
+        const data = await apiFetch(`/api/governance/export?owner=${encodeURIComponent(owner)}`).then((res) => res.json());
         downloadJson(`myjavis-memory-${owner}.json`, data.export ?? data);
         setMessage('已导出当前 owner 的记忆 JSON');
         return;
@@ -65,7 +66,7 @@ export function GovernancePanel() {
         return;
       }
       const path = action === 'delete' ? `/api/governance/${encodeURIComponent(selected.id)}?owner=${encodeURIComponent(owner)}` : `/api/governance/${action}`;
-      const response = await fetch(path, {
+      const response = await apiFetch(path, {
         method: action === 'delete' ? 'DELETE' : 'POST',
         headers: action === 'delete' ? undefined : { 'Content-Type': 'application/json' },
         body:
