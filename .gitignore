@@ -15,3 +15,4 @@ apps/server/eval/results.ndjson
 
 # 大体积参考资料(不入仓):火山 RTC 官方文档 PDF 105MB,超 GitHub 100MB 硬限
 docs/*.pdf
+apps/server/data/
