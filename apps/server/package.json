@@ -17,7 +17,8 @@
     "test:prompt-injection": "tsx scripts/prompt-injection.test.ts",
     "smoke:memory": "tsx scripts/smoke-memory.ts",
     "eval:phase0": "tsx eval/runner.ts && tsx eval/metrics.ts",
-    "migrate:memory": "tsx scripts/migrate-memory.ts"
+    "migrate:memory": "tsx scripts/migrate-memory.ts",
+    "test:voiceprint": "tsx scripts/voiceprint.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

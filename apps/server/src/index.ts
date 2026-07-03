@@ -15,6 +15,7 @@ import { cors } from 'hono/cors';
 import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
 import { governanceRoute } from './routes/governance.js';
+import { voiceprintRoute } from './routes/voiceprint.js';
 
 const app = new Hono();
 const port = Number(process.env.PORT ?? 3001);
@@ -34,6 +35,7 @@ app.use('/api/*', async (c, next) => {
 app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server' }));
 app.route('/api/rtc', rtcRoute);
 app.route('/api/governance', governanceRoute);
+app.route('/api/voiceprint', voiceprintRoute);
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 

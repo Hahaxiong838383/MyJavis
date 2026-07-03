@@ -10,6 +10,8 @@ import { Hono } from 'hono';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { setPromptOverride, clearPromptOverride } from '../rtc-prompt-override.js';
+import { callRtcOpenAPI } from '../providers/volc-openapi.js';
+import { listActiveVoiceprints } from '../voiceprint/registry.js';
 
 const require = createRequire(import.meta.url);
 // 火山 RTC token 私有格式（二进制 HMAC），原样复用火山官方 token.cjs（不移植避免 bug）。
@@ -21,18 +23,8 @@ const { AccessToken, privileges } = require('../rtc-token.cjs') as {
   };
   privileges: { PrivPublishStream: number; PrivSubscribeStream: number };
 };
-// @volcengine/openapi 是 CJS，用 require 避免 ESM interop 问题。
-const { Signer } = require('@volcengine/openapi') as {
-  Signer: new (req: Record<string, unknown>, service: string) => {
-    addAuthorization: (cred: { accessKeyId: string; secretKey: string }) => void;
-  };
-};
 
 const rtcRoute = new Hono();
-
-const RTC_HOST = 'rtc.volcengineapi.com';
-const RTC_REGION = 'cn-north-1';
-const RTC_VERSION = '2024-12-01';
 // 火山 CustomLLM 回调地址：必须公网 HTTPS（火山云回调我方大脑端点）。本地验证可设隧道地址。
 const CUSTOM_LLM_URL = process.env.CUSTOM_LLM_URL || 'https://example.com/v1/chat/completions';
 const WELCOME = process.env.RTC_WELCOME_MESSAGE || '你好，我在听，有什么可以帮你的？';
@@ -126,28 +118,6 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
   };
 }
 
-/** 用 AK/SK 签名调火山 RTC OpenAPI（StartVoiceChat / StopVoiceChat）。 */
-async function callRtcOpenAPI(action: string, body: Record<string, unknown>): Promise<any> {
-  const reqData = {
-    region: RTC_REGION,
-    method: 'POST',
-    params: { Action: action, Version: RTC_VERSION },
-    headers: { Host: RTC_HOST, 'Content-Type': 'application/json' },
-    body,
-  };
-  const signer = new Signer(reqData, 'rtc');
-  signer.addAuthorization({
-    accessKeyId: process.env.VOLC_ACCESS_KEY_ID || '',
-    secretKey: process.env.VOLC_SECRET_ACCESS_KEY || '',
-  });
-  const res = await fetch(`https://${RTC_HOST}?Action=${action}&Version=${RTC_VERSION}`, {
-    method: 'POST',
-    headers: reqData.headers as Record<string, string>,
-    body: JSON.stringify(body),
-  });
-  return res.json();
-}
-
 /**
  * 起一局实时语音：生成 RTC token + 起 AI agent。
  * body（均可选）：{ systemPrompt?: 调试台实时 prompt; userId?: 记忆注入键; voiceMode?: identify|denoise; voiceprintIds?: string[] }
@@ -179,12 +149,15 @@ rtcRoute.post('/start', async (c) => {
   }
   const memoryUser = startBody.userId?.trim() || undefined;
   const voiceMode: VoiceMode = startBody.voiceMode === 'denoise' ? 'denoise' : 'identify';
-  const voiceprintIds =
+  // 声纹 IdList 来源优先级：body 显式（调试）> env VOLC_VOICEPRINT_IDS（调试）> registry 自动（正常路径）
+  const explicitIds =
     startBody.voiceprintIds?.filter((id) => id.trim()).map((id) => id.trim()) ??
     (process.env.VOLC_VOICEPRINT_IDS ?? '')
       .split(',')
       .map((id) => id.trim())
       .filter(Boolean);
+  const registryIds = explicitIds.length === 0 ? listActiveVoiceprints().map((r) => r.voiceprintId) : [];
+  const voiceprintIds = explicitIds.length > 0 ? explicitIds : registryIds;
   const voiceprintScore = Number.isFinite(startBody.voiceprintScore) ? Number(startBody.voiceprintScore) : 50;
 
   // RTC token（订阅 + 发布权限，24h 过期）
