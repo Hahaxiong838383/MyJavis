@@ -63,6 +63,8 @@ export function useVoiceRtc(): UseVoiceRtc {
   const streamIndexMainRef = useRef<any>(null); // rtcMod.StreamIndex.STREAM_INDEX_MAIN（SDK 加载后写入）
   const sessionRef = useRef<{ roomId: string; taskId: string; userId: string } | null>(null);
   const failedUsersRef = useRef<Set<string>>(new Set());
+  // 声纹 AudioName(slug)/voiceprintId → 显示名（字幕回调的 voiceprintName 是注册时的 AudioName）
+  const speakerNamesRef = useRef<Map<string, string>>(new Map());
   /* eslint-enable @typescript-eslint/no-explicit-any */
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -86,8 +88,14 @@ export function useVoiceRtc(): UseVoiceRtc {
           const data = JSON.parse(value)?.data?.[0];
           const myId = sessionRef.current?.userId;
           if (data?.text && data.userId) {
-            if (data.userId === myId) setUserSubtitle(data.text); // 用户说的（ASR 转写）
-            else setSubtitle(data.text); // 助手说的
+            if (data.userId === myId) {
+              // 声纹识别命中时字幕带 voiceprintName(=AudioName slug)/voiceprintId → 映射显示名
+              const key = data.voiceprintName || data.voiceprintId;
+              const speakerName = key ? speakerNamesRef.current.get(String(key)) : undefined;
+              setUserSubtitle(data.text, speakerName); // 用户说的（ASR 转写）
+            } else {
+              setSubtitle(data.text); // 助手说的
+            }
           }
         }
       } catch {
@@ -125,6 +133,19 @@ export function useVoiceRtc(): UseVoiceRtc {
         if (!data.ok) throw new Error(data.error || '起 AI 失败');
         sessionRef.current = { roomId: data.roomId, taskId: data.taskId, userId: data.userId };
         setRoomId(data.roomId);
+
+        // 拉声纹名册（AudioName/voiceprintId → 显示名），字幕署名用；失败不阻塞（署名回退"你"）
+        void apiFetch('/api/voiceprint/list')
+          .then((r) => r.json())
+          .then((d: { voiceprints?: Array<{ audioName: string; voiceprintId: string; displayName: string }> }) => {
+            const map = speakerNamesRef.current;
+            map.clear();
+            for (const v of d.voiceprints ?? []) {
+              map.set(v.audioName, v.displayName);
+              map.set(v.voiceprintId, v.displayName);
+            }
+          })
+          .catch(() => {});
 
         setConnectPhase('loading'); // 动态 import 12MB SDK，首次最慢
         const rtcMod: any = await import('@volcengine/rtc'); // eslint-disable-line @typescript-eslint/no-explicit-any

@@ -89,6 +89,9 @@ function stateFromPayload(args: {
   if (status === 'revoked' || status === 'disabled') return 'revoked';
   if (!args.voiceprintId) return 'unverified';
   if (status === 'registering') return 'registering';
+  // 'active' = 火山声纹识别已打标签（实时相似度过了 StartVoiceChat.Score 阈值，火山不回传
+  // 具体分数）→ 直接稳定态。来源见 voiceprint/speaker-tag.ts resolveSpeakerFromTag。
+  if (status === 'active') return 'active_stable';
   if (args.score === undefined || args.score < LOW_CONFIDENCE) return 'registering';
   if (args.score < STABLE_CONFIDENCE) return 'active_low';
   return 'active_stable';

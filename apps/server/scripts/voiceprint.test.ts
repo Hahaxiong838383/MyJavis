@@ -135,3 +135,50 @@ console.log('voiceprint.test ✅ 全部通过');
 }
 
 console.log('enroll-session.test ✅ 全部通过');
+
+// ---------- 识别链路：标签解析 + identity active 映射 ----------
+{
+  const { parseSpeakerTag, stripSpeakerTag, resolveSpeakerFromTag } = await import(
+    '../src/voiceprint/speaker-tag.js'
+  );
+  const { normalizeSpeakerEvidence } = await import('../src/memory/identity/index.js');
+  const { saveVoiceprint, newAudioName } = registry;
+
+  // 官方示例形态（半角括号，句尾）
+  let r = parseSpeakerTag('今天天气怎么样(当前说话人是jv_ab12cd34)');
+  assert.equal(r.cleanText, '今天天气怎么样');
+  assert.equal(r.audioName, 'jv_ab12cd34');
+  // 全角括号 + 句首
+  r = parseSpeakerTag('（当前说话人是jv_ab12cd34）今天天气怎么样');
+  assert.equal(r.cleanText, '今天天气怎么样');
+  assert.equal(r.audioName, 'jv_ab12cd34');
+  // 带冒号变体 + 空格
+  r = parseSpeakerTag('( 当前说话人是: jv_x )你好');
+  assert.equal(r.audioName, 'jv_x');
+  // 多个标签全剥，取第一个
+  r = parseSpeakerTag('(当前说话人是jv_a)你好(当前说话人是jv_b)');
+  assert.equal(r.cleanText, '你好');
+  assert.equal(r.audioName, 'jv_a');
+  // 无标签原样
+  r = parseSpeakerTag('普通一句话（笑）');
+  assert.equal(r.cleanText, '普通一句话（笑）');
+  assert.equal(r.audioName, undefined);
+  assert.equal(stripSpeakerTag('(当前说话人是jv_z)嗯嗯'), '嗯嗯');
+
+  // registry 反查 → payload → identity 定级
+  const an = newAudioName();
+  saveVoiceprint({ voiceprintId: 'vp_tag_test', audioName: an, displayName: '川哥' });
+  const resolved = resolveSpeakerFromTag(an, 'room-x');
+  assert.equal(resolved.record?.displayName, '川哥');
+  assert.equal(resolved.payload.status, 'active');
+  const ev = normalizeSpeakerEvidence(resolved.payload);
+  assert.equal(ev.state, 'active_stable'); // 标签在场 = 过了火山 Score 阈值 → 稳定态（无实时分）
+  assert.ok(ev.confidence >= 0.9);
+
+  // registry 查不到 → unverified（记忆走 quarantine，不串账）
+  const unmatched = resolveSpeakerFromTag('jv_ghost', 'room-x');
+  assert.equal(unmatched.record, undefined);
+  assert.equal(normalizeSpeakerEvidence(unmatched.payload).state, 'unverified');
+}
+
+console.log('speaker-tag.test ✅ 全部通过');

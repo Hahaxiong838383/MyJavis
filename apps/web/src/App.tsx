@@ -24,6 +24,7 @@ export default function App() {
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
+  const speakerName = useAppStore((s) => s.speakerName);
 
   return (
     <div style={styles.page}>
@@ -60,7 +61,7 @@ export default function App() {
         <div style={styles.captions}>
           {userSubtitle && (
             <p style={styles.userLine}>
-              <b>你：</b>
+              <b>{speakerName || '你'}：</b>
               {userSubtitle}
             </p>
           )}

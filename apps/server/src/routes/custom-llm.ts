@@ -29,6 +29,7 @@ import {
   startEnroll,
 } from '../voiceprint/enroll-session.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
+import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
 import type { ChatTurn } from '../providers/types.js';
 import type { VolcSpeakerPayload } from '../memory/types.js';
 
@@ -78,21 +79,30 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const chat = messages.filter((m) => m.role === 'user' || m.role === 'assistant');
   const lastUserIdx = chat.map((m) => m.role).lastIndexOf('user');
-  const userText = lastUserIdx >= 0 ? extractText(chat[lastUserIdx]!.content) : '';
-  const history: ChatTurn[] = chat
-    .slice(0, Math.max(lastUserIdx, 0))
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: extractText(m.content) }));
+  const rawUserText = lastUserIdx >= 0 ? extractText(chat[lastUserIdx]!.content) : '';
+  // 声纹识别标签（Mode=2 火山拼进消息文本）：剥出身份信号，LLM/记忆只见干净文本。
+  // history 里每条 user 消息同样清洗（多轮对话每轮都可能带标签）。
+  const { cleanText: userText, audioName: speakerAudioName } = parseSpeakerTag(rawUserText);
+  const history: ChatTurn[] = chat.slice(0, Math.max(lastUserIdx, 0)).map((m) => ({
+    role: m.role as 'user' | 'assistant',
+    content: m.role === 'user' ? stripSpeakerTag(extractText(m.content)) : extractText(m.content),
+  }));
 
   const sessionId = c.req.query('session') ?? undefined; // roomId → prompt override 键
   const userId = c.req.query('user') ?? undefined; // mock voiceprintId / 后续 account hint
-  const speakerPayload = extractSpeakerPayload(body, {
-    roomId: sessionId,
-    queryVoiceprintId: c.req.query('voiceprintId') ?? userId,
-    queryVoiceprintName: c.req.query('voiceprintName') ?? userId,
-    queryScore: c.req.query('score'),
-    queryStatus: c.req.query('speakerStatus'),
-  });
+  // 身份来源优先级：火山标签（生产真实信号）> body.speaker_evidence（预留）> query mock（调试）
+  const tagSpeaker = speakerAudioName ? resolveSpeakerFromTag(speakerAudioName, sessionId) : undefined;
+  const speakerPayload =
+    tagSpeaker?.payload ??
+    extractSpeakerPayload(body, {
+      roomId: sessionId,
+      queryVoiceprintId: c.req.query('voiceprintId') ?? userId,
+      queryVoiceprintName: c.req.query('voiceprintName') ?? userId,
+      queryScore: c.req.query('score'),
+      queryStatus: c.req.query('speakerStatus'),
+    });
   const identityResolution = identity.resolve(speakerPayload);
+  const speakerName = tagSpeaker?.record?.displayName;
   const turnTrace = new TurnTrace({
     roomId: sessionId ?? 'unknown-room',
     turnId: `${sessionId ?? 'room'}-${Date.now()}`,
@@ -131,15 +141,29 @@ customLlmRoute.post('/chat/completions', async (c) => {
       usedProvisional: contextBundle.usedProvisional,
     });
   }
+  // 身份段放 taskSuffix（prompt 最末尾，近因效应最强位——p003 教训）：LLM 据此用名字称呼、
+  // 结合该 owner 的记忆个性化；标签原文不透传，防被复读/入记忆。
+  const speakerSuffix = speakerName
+    ? `当前说话人：${speakerName}（声纹已确认）。自然地用名字称呼对方，并结合上面属于 TA 的记忆数据个性化回应；不要提"声纹/识别/系统"这类机制词。`
+    : undefined;
   const systemPrompt =
-    overridePrompt ?? (await turnTrace.measure('promptAssemblyMs', () => assemblePrompt({ memoriesAsData: contextBundle })));
+    overridePrompt ??
+    (await turnTrace.measure('promptAssemblyMs', () =>
+      assemblePrompt({ memoriesAsData: contextBundle, taskSuffix: speakerSuffix }),
+    ));
 
   // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
     `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
-      `${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
+      `${speakerName ? ` [speaker:${speakerName}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
       ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
   );
+  // 标签形态观测：正常剥离打确认；含"当前说话人"却没剥掉 = 火山标签形态与解析器不符，打告警。
+  if (rawUserText !== userText || /当前说话人/.test(userText)) {
+    console.log(
+      `[custom-llm] speaker-tag raw="${rawUserText.slice(0, 80)}" clean="${userText.slice(0, 40)}" audioName=${speakerAudioName ?? 'UNPARSED!'}`,
+    );
+  }
   // ⚠️ 用户发言的溯源写入延迟到「流正常完成且连接未被火山断开」（见 onDone）：
   //    Prefill 开启后 interim 半句也会打进来，弃用的调用火山会 abort 连接——立即写入会污染
   //    event_log/记忆（半句话当 final、串账）。abort 守卫对 barge-in 弃用响应同样正确。
