@@ -56,6 +56,12 @@ export interface LlmStreamArgs {
   systemPrompt: string;
   userText: string;
   history: ChatTurn[];
+  /**
+   * 本轮上下文注（如声纹身份）：以 system 消息插在 history 之后、当前 user 之前——
+   * 近因最强位。放 systemPrompt 尾部会被 history 惯性压过（真机实证：history 里
+   * assistant 说过"认错了"，LLM 就无视 system 尾部身份段继续说不认识）。
+   */
+  contextNote?: string;
   onDelta: (chunk: string) => void;
   onDone: (full: string) => void;
   onError?: (err: Error) => void;

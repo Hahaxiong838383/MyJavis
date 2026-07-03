@@ -42,6 +42,10 @@ import type { VolcSpeakerPayload } from '../memory/types.js';
 
 const customLlmRoute = new Hono();
 
+// 身份粘滞缓存：房间 → 最近一次稳定声纹标签的说话人（短句无标签轮沿用称呼，仅体验层）
+const STICKY_SPEAKER_TTL_MS = 30_000;
+const stickySpeakers = new Map<string, { displayName: string; ts: number }>();
+
 type OpenAiMessage = { role: string; content: unknown };
 type CustomLlmBody = {
   messages?: OpenAiMessage[];
@@ -109,7 +113,16 @@ customLlmRoute.post('/chat/completions', async (c) => {
       queryStatus: c.req.query('speakerStatus'),
     });
   const identityResolution = identity.resolve(speakerPayload);
-  const speakerName = tagSpeaker?.record?.displayName;
+  // 身份粘滞（体验层）：短句（1-2s）声纹特征不足打不出标签是物理特性——同房间 30s 内有过
+  // 稳定标签就沿用其"称呼"，只影响 LLM 怎么叫人；记忆归属仍走本轮真实证据（无标签=quarantine），
+  // 串账风险为零。
+  const taggedName = tagSpeaker?.record?.displayName;
+  if (taggedName && sessionId) {
+    stickySpeakers.set(sessionId, { displayName: taggedName, ts: Date.now() });
+  }
+  const sticky = !taggedName && sessionId ? stickySpeakers.get(sessionId) : undefined;
+  const stickyName = sticky && Date.now() - sticky.ts < STICKY_SPEAKER_TTL_MS ? sticky.displayName : undefined;
+  const speakerName = taggedName ?? stickyName;
   const turnTrace = new TurnTrace({
     roomId: sessionId ?? 'unknown-room',
     turnId: `${sessionId ?? 'room'}-${Date.now()}`,
@@ -148,21 +161,22 @@ customLlmRoute.post('/chat/completions', async (c) => {
       usedProvisional: contextBundle.usedProvisional,
     });
   }
-  // 身份段放 taskSuffix（prompt 最末尾，近因效应最强位——p003 教训）：LLM 据此用名字称呼、
-  // 结合该 owner 的记忆个性化；标签原文不透传，防被复读/入记忆。
-  const speakerSuffix = speakerName
-    ? `当前说话人：${speakerName}（声纹已确认）。自然地用名字称呼对方，并结合上面属于 TA 的记忆数据个性化回应；不要提"声纹/识别/系统"这类机制词。`
+  // 身份注入走 contextNote（history 之后、当前消息之前=近因最强位）：放 system 尾部会被
+  // history 惯性压过——真机实证 history 里 assistant 说过"认错了"后，LLM 无视身份段继续
+  // 说"没法通过声音认人"（幻觉理由）。措辞明确指示覆盖历史立场。
+  const speakerNote = speakerName
+    ? `[系统确认] 当前说话的是：${speakerName}。你能听出 TA 的声音。直接用名字自然称呼；` +
+      `即使前面对话里你说过"不认识/认错了"，现在已确认，无需道歉解释，正常继续即可。` +
+      `不要提"声纹/识别/系统/确认"这类机制词。`
     : undefined;
   const systemPrompt =
     overridePrompt ??
-    (await turnTrace.measure('promptAssemblyMs', () =>
-      assemblePrompt({ memoriesAsData: contextBundle, taskSuffix: speakerSuffix }),
-    ));
+    (await turnTrace.measure('promptAssemblyMs', () => assemblePrompt({ memoriesAsData: contextBundle })));
 
   // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
     `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
-      `${speakerName ? ` [speaker:${speakerName}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
+      `${speakerName ? ` [speaker:${speakerName}${taggedName ? '' : '·sticky'}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
       ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
   );
   // 标签形态观测：正常剥离打确认；含"当前说话人"却没剥掉 = 火山标签形态与解析器不符，打告警。
@@ -226,6 +240,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
         systemPrompt,
         userText,
         history,
+        contextNote: speakerNote,
         onDelta: (delta) => {
           if (!firstTokenSeen) {
             firstTokenSeen = true;

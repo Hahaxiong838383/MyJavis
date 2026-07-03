@@ -182,6 +182,8 @@ async function streamOne(
       messages: [
         { role: 'system', content: args.systemPrompt },
         ...args.history,
+        // 本轮上下文注（声纹身份等）插在 history 之后=近因最强位，防被历史对话惯性压过
+        ...(args.contextNote ? [{ role: 'system', content: args.contextNote }] : []),
         { role: 'user', content: args.userText },
       ],
     }),
