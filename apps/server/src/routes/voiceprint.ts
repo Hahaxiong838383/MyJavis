@@ -43,12 +43,32 @@ voiceprintRoute.get('/pending', (c) => {
   });
 });
 
+/**
+ * 前端质量门触发重录：录到 28s 强停但有效语音不足（弱样本传给火山会成"合法但认不出"的
+ * 声纹——川哥 28.2s 强停样本 0 次匹配的教训）。走与火山拒同一条 failEnroll 重试链。
+ */
+voiceprintRoute.post('/enroll-retry', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { roomId?: string; reason?: string } | null;
+  const roomId = body?.roomId?.trim();
+  if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
+  const session = getEnroll(roomId);
+  if (!session || session.state !== 'recording') return c.json({ ok: true, pending: session ?? null });
+  const retryable = failEnroll(roomId, body?.reason ?? 'insufficient_effective_speech');
+  console.log(`[voiceprint] enroll-retry room=${roomId} reason=${body?.reason ?? '-'} retryable=${retryable}`);
+  speakText(roomId, retryable ? enrollRetryLine() : enrollFailLine(), false).catch((err) =>
+    console.log(`[voiceprint] 重录播报失败（不阻塞）：${(err as Error).message}`),
+  );
+  return c.json({ ok: true, retryable });
+});
+
 voiceprintRoute.post('/register', async (c) => {
   const body = (await c.req.json().catch(() => null)) as {
     displayName?: string;
     wavBase64?: string;
     metaInfo?: string;
     roomId?: string; // 对话式注册：带上后成败结果经 ExternalTextToSpeech 播报给房间
+    effectiveSec?: number; // 前端能量估算的有效语音秒数（观测样本质量）
+    totalSec?: number;
   } | null;
   const displayName = body?.displayName?.trim();
   const wavBase64 = body?.wavBase64?.trim();
@@ -97,7 +117,8 @@ voiceprintRoute.post('/register', async (c) => {
     }
     const record = saveVoiceprint({ voiceprintId, audioName, displayName, metaInfo: body?.metaInfo });
     console.log(
-      `[voiceprint] registered "${displayName}" id=${voiceprintId} owner=${record.ownerId} dur=${wavInfo.durationSec.toFixed(1)}s${sameName ? ' (重注册)' : ''}${roomId ? ` room=${roomId}` : ''}`,
+      `[voiceprint] registered "${displayName}" id=${voiceprintId} owner=${record.ownerId} dur=${wavInfo.durationSec.toFixed(1)}s` +
+        `${body?.effectiveSec != null ? ` effective=${Number(body.effectiveSec).toFixed(1)}s` : ''}${sameName ? ' (重注册)' : ''}${roomId ? ` room=${roomId}` : ''}`,
     );
     if (roomId) {
       completeEnroll(roomId);

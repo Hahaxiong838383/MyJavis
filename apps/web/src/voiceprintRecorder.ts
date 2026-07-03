@@ -25,7 +25,9 @@ export interface RecorderResult {
 const TARGET_EFFECTIVE_SEC = 14;
 const MIN_TOTAL_SEC = 15;
 const MAX_TOTAL_SEC = 28;
-const RMS_SPEECH_THRESHOLD = 0.02;
+// 0.02 → 0.03（2026-07-03 真机教训：阈值低会把底噪/远场弱音计入"有效"，凑够 14s 的
+// 弱样本火山收下但认不出——川哥 28.2s 强停样本声纹 0 次匹配）
+const RMS_SPEECH_THRESHOLD = 0.03;
 
 export class VoiceprintRecorder {
   private ctx: AudioContext | null = null;

@@ -44,14 +44,30 @@ export function useVoiceprintEnroll(args: {
       recorderRef.current = null;
     };
 
-    const upload = async (wavBase64: string): Promise<void> => {
+    const upload = async (r: { wavBase64: string; effectiveSec: number; totalSec: number }): Promise<void> => {
       uploadingRef.current = true;
-      setStatus((s) => (s ? { ...s, state: 'uploading' } : s));
       try {
+        // 质量门：28s 强停但有效语音不足 → 弱样本不上传（火山会收下但认不出），直接请求重录
+        if (r.effectiveSec < 12.5) {
+          console.log(`[enroll] weak sample effective=${r.effectiveSec.toFixed(1)}s, request retry`);
+          await apiFetch('/api/voiceprint/enroll-retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ roomId, reason: `effective=${r.effectiveSec.toFixed(1)}s` }),
+          });
+          return;
+        }
+        setStatus((s) => (s ? { ...s, state: 'uploading' } : s));
         await apiFetch('/api/voiceprint/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ displayName: pendingNameRef.current, wavBase64, roomId }),
+          body: JSON.stringify({
+            displayName: pendingNameRef.current,
+            wavBase64: r.wavBase64,
+            roomId,
+            effectiveSec: Math.round(r.effectiveSec * 10) / 10,
+            totalSec: Math.round(r.totalSec * 10) / 10,
+          }),
         });
         // 成败与重试话术均由 server 播报并更新 pending 状态；这里只等下一轮轮询对齐
       } catch (err) {
@@ -73,7 +89,7 @@ export function useVoiceprintEnroll(args: {
             effectiveSec: p.effectiveSec,
             targetSec: p.targetEffectiveSec,
           }),
-        (r) => void upload(r.wavBase64),
+        (r) => void upload(r),
         (err) => {
           console.log('[enroll] recorder error:', err.message);
           recorderRef.current = null;

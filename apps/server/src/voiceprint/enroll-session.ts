@@ -167,11 +167,15 @@ export function clearEnroll(roomId: string): void {
 
 // ---------- 话术（server 直出，不走 LLM，保证可控） ----------
 
-/** 意图命中后的引导语：让用户自然连续说话 ≥15s（有效语音 ≥12s 是火山硬性要求）。 */
+/**
+ * 意图命中后的引导语：让用户自然连续说话 ≥15s（有效语音 ≥12s 是火山硬性要求）。
+ * 质量提示（2026-07-03 真机教训：川哥样本 28.2s 强停=断续弱样本 → 声纹 0 次匹配）：
+ * 离麦近 + 连续说，是样本质量的两个最大变量。
+ */
 export function enrollGuideLine(displayName: string): string {
   return (
-    `好呀${displayName}，我来记一下你的声音。接下来你随便跟我聊二十秒左右，` +
-    `比如今天做了什么、最近喜欢什么，说得越自然越好，我安静听你说。`
+    `好呀${displayName}，我来记一下你的声音。你离我近一点，用平时说话的音量，` +
+    `连续地跟我聊二十秒，比如今天做了什么、最近喜欢什么，中间别停太久，我安静听你说。`
   );
 }
 
@@ -195,13 +199,13 @@ export function enrollReplaceLine(displayName: string): string {
   return `${displayName}，你的声音我之前记过，这次就当重新记一遍。来，随便跟我聊二十秒左右，我认真听。`;
 }
 
-/** 录音期间的倾听哼声（轮换，短到不污染录音；AEC 已消回声，双保险）。 */
-const LISTEN_ACKS = ['嗯嗯。', '嗯，你说。', '在听呢。', '嗯。', '继续继续。'];
-let ackIdx = 0;
+/**
+ * 录音期间 Javis 完全静默（返回空格 = 无 TTS）。
+ * 曾用轮换哼声（嗯嗯/在听呢）防冷场，真机发现哼声外放会混进声纹样本（AEC 残留）拉低质量；
+ * 引导语已承诺"我安静听你说"，视觉反馈由 App 进度条承担。
+ */
 export function listeningAck(): string {
-  const ack = LISTEN_ACKS[ackIdx % LISTEN_ACKS.length]!;
-  ackIdx += 1;
-  return ack;
+  return ' ';
 }
 
 // ---------- 注册结果播报（经 ExternalTextToSpeech 直接 TTS，见 routes/voiceprint.ts） ----------
