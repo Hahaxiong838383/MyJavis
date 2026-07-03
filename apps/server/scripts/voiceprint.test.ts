@@ -182,3 +182,79 @@ console.log('enroll-session.test ✅ 全部通过');
 }
 
 console.log('speaker-tag.test ✅ 全部通过');
+
+// ---------- 意图 v2：无名意图 + awaiting_name（2026-07-03 真机日志校准） ----------
+{
+  const {
+    detectEnrollIntent,
+    extractNameReply,
+    isEnrollCancel,
+    startEnrollAwaitingName,
+    bumpNameRetry,
+    getEnroll,
+    clearEnroll,
+  } = await import('../src/voiceprint/enroll-session.js');
+
+  // 川哥真机原话（旧版全漏 → 修复后应命中无名意图）
+  assert.equal(detectEnrollIntent('记住我的声音')?.kind, 'unnamed');
+  assert.equal(detectEnrollIntent('嗯，我是谁？记住我的声音')?.kind, 'unnamed');
+  assert.equal(detectEnrollIntent('你能记住我的声音吗')?.kind, 'unnamed');
+  assert.equal(detectEnrollIntent('帮我记一下我的声音好不好')?.kind, 'unnamed');
+  // 带名 + 放宽尾部
+  const named = detectEnrollIntent('我是川哥，记住我好不好');
+  assert.equal(named?.kind, 'named');
+  assert.equal(named?.kind === 'named' ? named.displayName : '', '川哥');
+  // 仍不误触发
+  assert.equal(detectEnrollIntent('我是不是让你记住我的日程了'), null);
+  assert.equal(detectEnrollIntent('记住我的日程'), null);
+  assert.equal(detectEnrollIntent('你记性怎么样'), null);
+
+  // awaiting_name 名字提取（宽松，上下文明确）
+  assert.equal(extractNameReply('我叫川哥'), '川哥');
+  assert.equal(extractNameReply('我是川哥。'), '川哥');
+  assert.equal(extractNameReply('嗯，叫我老陈'), '老陈');
+  assert.equal(extractNameReply('川哥'), '川哥');
+  assert.equal(extractNameReply('Alice'), 'Alice');
+  assert.equal(extractNameReply('为什么要名字'), null);
+  assert.equal(extractNameReply('我是谁你猜'), null);
+  assert.equal(extractNameReply('不告诉你'), null);
+  assert.equal(extractNameReply('今天天气不错随便聊聊吧'), null);
+
+  assert.equal(isEnrollCancel('算了算了'), true);
+  assert.equal(isEnrollCancel('先不弄了'), true);
+  assert.equal(isEnrollCancel('我叫川哥'), false);
+
+  // awaiting_name 状态机：追问 2 次后放弃
+  const room = 'room-awaiting-test';
+  startEnrollAwaitingName(room);
+  assert.equal(getEnroll(room)?.state, 'awaiting_name');
+  startEnrollAwaitingName(room); // interim 幂等不重置
+  assert.equal(bumpNameRetry(room), true);
+  assert.equal(bumpNameRetry(room), true);
+  assert.equal(bumpNameRetry(room), false); // 第 3 次超限
+  clearEnroll(room);
+}
+
+console.log('enroll-intent-v2.test ✅ 全部通过');
+
+// 裸名字收紧回归（"哈哈随便啦"真机 bug）
+{
+  const { extractNameReply } = await import('../src/voiceprint/enroll-session.js');
+  assert.equal(extractNameReply('哈哈随便啦'), null);
+  assert.equal(extractNameReply('随便'), null);
+  assert.equal(extractNameReply('好的好的'), null);
+  assert.equal(extractNameReply('川哥'), '川哥');
+  assert.equal(extractNameReply('老陈啦'), '老陈'); // 尾语气剥离
+  assert.equal(extractNameReply('我叫哈哈随便'), '哈哈随便'); // 带"我叫"明示,尊重用户
+}
+console.log('name-strict.test ✅');
+
+// 否定闲聊 + 英文名回归
+{
+  const { extractNameReply } = await import('../src/voiceprint/enroll-session.js');
+  assert.equal(extractNameReply('就不说'), null);
+  assert.equal(extractNameReply('别问'), null);
+  assert.equal(extractNameReply('Alice'), 'Alice');
+  assert.equal(extractNameReply('David123'), 'David123');
+}
+console.log('name-strict2.test ✅');

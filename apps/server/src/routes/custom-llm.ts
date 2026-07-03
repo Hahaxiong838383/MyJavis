@@ -20,13 +20,20 @@ import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index
 import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
 import {
+  bumpNameRetry,
+  clearEnroll,
   detectEnrollIntent,
+  enrollAskNameLine,
   enrollFullLine,
   enrollGuideLine,
+  enrollNameRetryLine,
   enrollReplaceLine,
+  extractNameReply,
   getEnroll,
+  isEnrollCancel,
   listeningAck,
   startEnroll,
+  startEnrollAwaitingName,
 } from '../voiceprint/enroll-session.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
@@ -280,23 +287,58 @@ export { customLlmRoute };
 
 /**
  * 声纹注册流程的直出话术裁决（无命中返回 null → 走正常 LLM 链路）：
- * 1) 「我是X，记住我」意图：满 3 人拒绝 / 同名重注册 / 正常引导（建 pending 会话）；
- * 2) 该房间录音进行中：极简倾听哼声（避免 TTS 长回复污染录音，AEC 之外的双保险）。
- * 意图检测在 recording 检查之前：录音中改口「我是B记住我」可换名重录。
+ * 1) 带名意图「我是X，记住我」：满员拒绝 / 同名重注册 / 引导（建 recording 会话）；
+ * 2) 无名意图「记住我的声音」：进 awaiting_name，Javis 反问名字（真机日志证明用户不会背句式）；
+ * 3) awaiting_name 中：提取名字 → 转 recording；没听出追问 ≤2 次；"算了"随时中止；
+ * 4) recording 中：极简倾听哼声（避免 TTS 长回复污染录音）。
+ * 带名意图检测最先：任何阶段直接说「我是B记住我」都能换名重来。
  */
 function resolveEnrollCanned(roomId: string | undefined, userText: string): string | null {
   if (!roomId || !userText.trim()) return null;
-  const intent = detectEnrollIntent(userText);
-  if (intent) {
-    const sameName = findByDisplayName(intent.displayName);
+  const session = getEnroll(roomId);
+
+  const beginNamed = (displayName: string): string => {
+    const sameName = findByDisplayName(displayName);
     const existing = listActiveVoiceprints();
     if (!sameName && existing.length >= MAX_ACTIVE_VOICEPRINTS) {
+      clearEnroll(roomId);
       return enrollFullLine(existing.map((r) => r.displayName));
     }
-    startEnroll(roomId, intent.displayName);
-    return sameName ? enrollReplaceLine(intent.displayName) : enrollGuideLine(intent.displayName);
+    startEnroll(roomId, displayName);
+    return sameName ? enrollReplaceLine(displayName) : enrollGuideLine(displayName);
+  };
+
+  const intent = detectEnrollIntent(userText);
+  if (intent?.kind === 'named') return beginNamed(intent.displayName);
+
+  if (session?.state === 'awaiting_name') {
+    if (isEnrollCancel(userText)) {
+      clearEnroll(roomId);
+      return '好，那先不记了，想记的时候随时说。';
+    }
+    const name = extractNameReply(userText);
+    if (name) return beginNamed(name);
+    if (bumpNameRetry(roomId)) return enrollNameRetryLine();
+    clearEnroll(roomId);
+    return '那咱们先聊着，想记声音的时候说"我叫某某，记住我的声音"就行。';
   }
-  if (getEnroll(roomId)?.state === 'recording') return listeningAck();
+
+  if (intent?.kind === 'unnamed') {
+    const existing = listActiveVoiceprints();
+    if (existing.length >= MAX_ACTIVE_VOICEPRINTS) {
+      return enrollFullLine(existing.map((r) => r.displayName));
+    }
+    startEnrollAwaitingName(roomId);
+    return enrollAskNameLine();
+  }
+
+  if (session?.state === 'recording') {
+    if (isEnrollCancel(userText)) {
+      clearEnroll(roomId);
+      return '好，先不记了。';
+    }
+    return listeningAck();
+  }
   return null;
 }
 

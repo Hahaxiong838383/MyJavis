@@ -14,14 +14,14 @@ const POLL_MS = 2500;
 
 export interface EnrollStatus {
   displayName: string;
-  state: 'recording' | 'uploading' | 'done' | 'failed';
+  state: 'awaiting_name' | 'recording' | 'uploading' | 'done' | 'failed';
   effectiveSec: number;
   targetSec: number;
 }
 
 interface PendingPayload {
   displayName: string;
-  state: 'recording' | 'done' | 'failed';
+  state: 'awaiting_name' | 'recording' | 'done' | 'failed';
   attempt: number;
 }
 

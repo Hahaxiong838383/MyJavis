@@ -170,11 +170,8 @@ export function useVoiceRtc(): UseVoiceRtc {
           { isAutoPublish: true, isAutoSubscribeAudio: true, roomProfileType: RoomProfileType.chat },
         );
         // 进房成功即视为连上（不等麦克风采集，避免权限弹窗卡住 UI / 开场白）
-        try {
-          engine.setPlaybackVolume?.(60);
-        } catch {
-          /* 老 SDK 无此方法忽略 */
-        }
+        // （曾有 setPlaybackVolume(60) 压播放音量——P003 儿童场景遗留，Javis 不需要，且加剧
+        //   "TTS 忽大忽小"体感，已移除=默认 100%。）
         setConnected(true);
         setConnecting(false);
         setConnectPhase('idle');

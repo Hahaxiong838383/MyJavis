@@ -36,6 +36,10 @@ const VAD_AIVAD = (process.env.VAD_AIVAD ?? '0') === '1';
 // Prefill：火山把 ASR 中间结果提前发给 LLM"边听边想"（官方 PDF 页7401/7620，代价=额外模型调用）。
 // LLM_PREFILL=0 关闭（回滚点）。custom-llm 侧有 abort 守卫防 interim 污染记忆。
 const LLM_PREFILL = (process.env.LLM_PREFILL ?? '0') === '1';
+// 打断保护（PDF 页7649：InterruptSpeechDuration 默认 0=有真实语义人声即掐 TTS——多人/环境音
+// 场景 TTS 被反复掐断，体感"忽大忽小"）。800=持续说 0.8s 才打断；官方多人场景建议 1500+；
+// 打断后说话仍由 SilenceTime+AIVAD 正常判停。0=不发字段（回滚）。取值 0 或 [200,3000]。
+const INTERRUPT_SPEECH_MS = Number(process.env.INTERRUPT_SPEECH_MS ?? 800);
 
 /** 拼 custom-llm 回调 URL：?session=roomId（prompt override 键）+ 可选 ?user=（记忆注入键）。 */
 function buildCustomLlmUrl(roomId: string, userId?: string): string {
@@ -86,6 +90,9 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
         // 450 = 快接上；若句中思考停顿被切（抢话）→ 调回 500-550 或开 AIVAD。0 = 不发此字段（回滚）。
         ...(VAD_SILENCE_MS > 0
           ? { VADConfig: { SilenceTime: VAD_SILENCE_MS, ...(VAD_AIVAD ? { AIVAD: true } : {}) } }
+          : {}),
+        ...(INTERRUPT_SPEECH_MS > 0
+          ? { InterruptConfig: { InterruptSpeechDuration: INTERRUPT_SPEECH_MS } }
           : {}),
       },
       TTSConfig: {

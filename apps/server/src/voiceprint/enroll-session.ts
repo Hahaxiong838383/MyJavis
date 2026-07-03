@@ -9,13 +9,14 @@
  * 状态存内存（单进程 pm2，重启丢失=用户再说一遍，可接受）。
  */
 
-export type EnrollState = 'recording' | 'done' | 'failed';
+export type EnrollState = 'awaiting_name' | 'recording' | 'done' | 'failed';
 
 export interface EnrollSession {
   roomId: string;
-  displayName: string;
+  displayName: string; // awaiting_name 阶段为空串
   state: EnrollState;
   attempt: number; // 录音上传尝试次数（火山拒后可重试，≤MAX_ATTEMPTS）
+  nameRetries: number; // awaiting_name 阶段没听出名字的追问次数（超限放弃，防吞掉所有对话）
   createdAt: number;
   expiresAt: number;
   lastError?: string;
@@ -28,20 +29,54 @@ export const MAX_ATTEMPTS = 2;
 const sessions = new Map<string, EnrollSession>();
 
 /**
- * 意图识别：「我是X，记住我」类。三重防误触发（宁漏勿误——漏了用户重说一遍，误触发很尴尬）：
- * ① 名字位排除"不是/就是/也是"开头；② "记住我"后不能接"的"（防"记住我的日程"）；
- * ③ 意图短语后必须句末或语气词收尾（防"…记住我干嘛/…记住我日程的那个人"）。
+ * 意图识别（2026-07-03 真机日志校准：川哥说的是「记住我的声音」「我是谁？记住我的声音」这类
+ * 自然表达，旧版只认「我是X，记住我」全部漏掉 → 声纹从未注册成功。现分两级）：
+ *
+ * ① 带名意图：「我是X，记住我 / 记住我的声音」。防误触发三件套保留（名字位排除"不是/就是/也是"、
+ *    "记住我"后禁"的"、句末锚定），尾部放宽到确认式（好不好/行不行/可以吗）。
+ * ② 无名意图：「记住我的声音 / 记一下我的声音 / 能记住我的声音吗」→ 进 awaiting_name，
+ *    Javis 反问名字（用户不需要背句式，这是修复的关键）。
  */
-export function detectEnrollIntent(text: string): { displayName: string } | null {
+export type EnrollIntent = { kind: 'named'; displayName: string } | { kind: 'unnamed' };
+
+const TAIL =
+  '[吧呀啊哦呢哈哟嘛吗呗啦咯哇~！!。.，,?？\\s]*(?:好不好|行不行|可以吗|能不能|好吗)?[吧呀啊哦呢哈哟嘛吗呗啦咯哇~！!。.，,?？\\s]*$';
+const NAMED_RE = new RegExp(
+  `(?:我是|我叫)\\s*(?!不是|就是|也是)([一-龥A-Za-z0-9·]{1,8}?)\\s*[,，。!！]?\\s*(?:记住我的声音|请?(?:记住|记一下|记录|认识)(?:一下)?我(?!的))${TAIL}`,
+);
+const UNNAMED_RE = new RegExp(`(?:请|帮我|能不能|能|可以)?\\s*(?:记住|记一下|记录)我的声音${TAIL}`);
+
+export function detectEnrollIntent(text: string): EnrollIntent | null {
   const normalized = text.trim();
   if (!normalized) return null;
-  const m =
-    /(?:我是|我叫)\s*(?!不是|就是|也是)([一-龥A-Za-z0-9·]{1,8}?)\s*[,，。!！]?\s*(?:记住我的声音|请?(?:记住|记一下|记录|认识)(?:一下)?我(?!的))[吧呀啊哦呢哈哟~！!。.，,\s]*$/.exec(
-      normalized,
-    );
-  const name = m?.[1]?.trim();
-  if (!name || name === '谁') return null;
-  return { displayName: name };
+  const named = NAMED_RE.exec(normalized);
+  const name = named?.[1]?.trim();
+  if (name && name !== '谁') return { kind: 'named', displayName: name };
+  if (UNNAMED_RE.test(normalized)) return { kind: 'unnamed' };
+  return null;
+}
+
+/**
+ * awaiting_name 阶段的名字提取：上下文已明确（Javis 刚问"你叫什么名字"），宽松匹配。
+ * 支持「我是川哥 / 我叫川哥 / 叫我川哥 / 川哥」；排除疑问与否定。
+ * 裸名字（无"我叫"前缀）收紧：≤4 字 + 口头禅黑名单——"哈哈随便啦"这类闲聊不能当名字。
+ */
+const NAME_CHITCHAT = /随便|哈哈|呵呵|嘿嘿|没有|知道|你好|谢谢|再见|拜拜|等等|好的|好啊|好呀|可以|是的|什么|不|别/;
+
+export function extractNameReply(text: string): string | null {
+  const normalized = text
+    .trim()
+    .replace(/[。.!！?？~\s]+$/, '')
+    .replace(/^[嗯啊哦呃唔]+[,，]?\s*/, '')
+    .replace(/[啦咯哟哈呀吧呢嘛]+$/, '');
+  if (!normalized || normalized.length > 24) return null;
+  if (/谁|不知道|不告诉|为什么|干嘛|什么意思/.test(normalized)) return null;
+  const m = /^(?:我是|我叫|叫我|就叫)\s*(?!不是|就是|也是)([一-龥A-Za-z0-9·]{1,8})$/.exec(normalized);
+  if (m?.[1]) return m[1];
+  // 裸名字（无"我叫"前缀）：中文 ≤4 字 / 英文 ≤12 字符，拒口头禅与含否定字的闲聊（"就不说"）
+  const bare = /^[一-龥]{1,4}$|^[A-Za-z][A-Za-z0-9·]{0,11}$/.test(normalized);
+  if (bare && !NAME_CHITCHAT.test(normalized)) return normalized;
+  return null;
 }
 
 /** 建/更新注册会话（幂等：Prefill interim 先触发、final 再触发时以 final 的名字为准）。 */
@@ -52,11 +87,43 @@ export function startEnroll(roomId: string, displayName: string): EnrollSession 
     displayName,
     state: 'recording',
     attempt: (getEnroll(roomId)?.attempt ?? 0) + 0, // attempt 只在失败重试时递增
+    nameRetries: 0,
     createdAt: now,
     expiresAt: now + SESSION_TTL_MS,
   };
   sessions.set(roomId, session);
   return session;
+}
+
+/** 无名意图：先进 awaiting_name（Javis 反问名字），拿到名字后转 recording。 */
+export function startEnrollAwaitingName(roomId: string): EnrollSession {
+  const existing = getEnroll(roomId);
+  if (existing?.state === 'awaiting_name') return existing; // Prefill interim 幂等
+  const now = Date.now();
+  const session: EnrollSession = {
+    roomId,
+    displayName: '',
+    state: 'awaiting_name',
+    attempt: 0,
+    nameRetries: 0,
+    createdAt: now,
+    expiresAt: now + SESSION_TTL_MS,
+  };
+  sessions.set(roomId, session);
+  return session;
+}
+
+/** awaiting_name 追问一次；超限返回 false（调用方 clear + 放弃话术）。 */
+export function bumpNameRetry(roomId: string): boolean {
+  const s = sessions.get(roomId);
+  if (!s || s.state !== 'awaiting_name') return false;
+  s.nameRetries += 1;
+  return s.nameRetries <= 2;
+}
+
+/** 用户想中止注册流程（"算了/不弄了/取消"）。 */
+export function isEnrollCancel(text: string): boolean {
+  return /算了|不弄了|不用了|取消|先不|不记了/.test(text.trim());
 }
 
 /** 读会话（惰性过期清理）。 */
@@ -106,6 +173,16 @@ export function enrollGuideLine(displayName: string): string {
     `好呀${displayName}，我来记一下你的声音。接下来你随便跟我聊二十秒左右，` +
     `比如今天做了什么、最近喜欢什么，说得越自然越好，我安静听你说。`
   );
+}
+
+/** 无名意图：反问名字。 */
+export function enrollAskNameLine(): string {
+  return `好呀，我来记你的声音。先告诉我，怎么称呼你？`;
+}
+
+/** awaiting_name 阶段没听出名字：再问一次。 */
+export function enrollNameRetryLine(): string {
+  return `没听清名字，你就说"我叫某某"，或者直接说名字就行。`;
 }
 
 /** 已满 3 人的拒绝话术。 */
