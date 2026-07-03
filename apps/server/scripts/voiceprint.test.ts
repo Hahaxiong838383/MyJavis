@@ -84,3 +84,54 @@ assert.throws(() => assertRegisterableWav(makeWav({ bits: 8 }).toString('base64'
 }
 
 console.log('voiceprint.test ✅ 全部通过');
+
+// ---------- 对话式注册：意图识别 + 会话状态机 ----------
+{
+  const {
+    detectEnrollIntent,
+    startEnroll,
+    getEnroll,
+    completeEnroll,
+    failEnroll,
+    clearEnroll,
+    MAX_ATTEMPTS,
+  } = await import('../src/voiceprint/enroll-session.js');
+
+  // 应命中
+  assert.equal(detectEnrollIntent('我是川哥，记住我')?.displayName, '川哥');
+  assert.equal(detectEnrollIntent('Javis，我是小明，记住我')?.displayName, '小明');
+  assert.equal(detectEnrollIntent('我叫Alice，请记住我')?.displayName, 'Alice');
+  assert.equal(detectEnrollIntent('我是老王记住我')?.displayName, '老王');
+  assert.equal(detectEnrollIntent('我是阿珍，认识一下我吧')?.displayName, '阿珍');
+  assert.equal(detectEnrollIntent('我是大熊，记住我的声音')?.displayName, '大熊');
+  assert.equal(detectEnrollIntent('你好呀，我是川哥，记一下我')?.displayName, '川哥');
+
+  // 不应命中（误触发防御）
+  assert.equal(detectEnrollIntent('我是不是让你记住我的日程了'), null);
+  assert.equal(detectEnrollIntent('帮我记住明天开会'), null);
+  assert.equal(detectEnrollIntent('我是谁你记住我干嘛'), null);
+  assert.equal(detectEnrollIntent('今天天气不错'), null);
+  assert.equal(detectEnrollIntent('我是昨天跟你说过记住我日程的那个人'), null); // 名字位>8字
+
+  // 会话状态机
+  const room = 'room-enroll-test';
+  startEnroll(room, '川哥');
+  assert.equal(getEnroll(room)?.state, 'recording');
+  startEnroll(room, '川哥本人'); // Prefill interim→final 幂等覆盖名字
+  assert.equal(getEnroll(room)?.displayName, '川哥本人');
+
+  // 失败重试：MAX_ATTEMPTS 前回 recording，之后 failed
+  for (let i = 1; i < MAX_ATTEMPTS; i++) assert.equal(failEnroll(room, 'too short'), true);
+  assert.equal(getEnroll(room)?.state, 'recording');
+  assert.equal(failEnroll(room, 'too short again'), false);
+  assert.equal(getEnroll(room)?.state, 'failed');
+
+  clearEnroll(room);
+  startEnroll(room, '川哥');
+  completeEnroll(room);
+  assert.equal(getEnroll(room)?.state, 'done');
+  clearEnroll(room);
+  assert.equal(getEnroll(room), undefined);
+}
+
+console.log('enroll-session.test ✅ 全部通过');

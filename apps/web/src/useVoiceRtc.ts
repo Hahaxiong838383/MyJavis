@@ -35,6 +35,8 @@ export interface UseVoiceRtc {
   connectPhase: ConnectPhase;
   error: string | null;
   needTapToPlay: boolean;
+  /** 当前房间 ID（连接中为 null）；声纹注册轮询等房间级 API 用。 */
+  roomId: string | null;
   /** 起一局对话。systemPrompt: 调试台实时 prompt；userId: 记忆注入键（可选）。 */
   start: (opts?: { systemPrompt?: string; userId?: string }) => Promise<void>;
   stop: () => Promise<void>;
@@ -67,6 +69,7 @@ export function useVoiceRtc(): UseVoiceRtc {
   const [error, setError] = useState<string | null>(null);
   const [needTapToPlay, setNeedTapToPlay] = useState(false);
   const [connectPhase, setConnectPhase] = useState<ConnectPhase>('idle');
+  const [roomId, setRoomId] = useState<string | null>(null);
 
   /** 解析火山二进制消息（状态 + 字幕）→ 更新 store。 */
   const handleBinary = useCallback(
@@ -121,6 +124,7 @@ export function useVoiceRtc(): UseVoiceRtc {
         };
         if (!data.ok) throw new Error(data.error || '起 AI 失败');
         sessionRef.current = { roomId: data.roomId, taskId: data.taskId, userId: data.userId };
+        setRoomId(data.roomId);
 
         setConnectPhase('loading'); // 动态 import 12MB SDK，首次最慢
         const rtcMod: any = await import('@volcengine/rtc'); // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -230,6 +234,7 @@ export function useVoiceRtc(): UseVoiceRtc {
     setConnecting(false);
     setConnectPhase('idle');
     setNeedTapToPlay(false);
+    setRoomId(null);
     setVoiceStatus('idle');
     setSubtitle('');
     setUserSubtitle('');
@@ -250,5 +255,5 @@ export function useVoiceRtc(): UseVoiceRtc {
     }
   }, []);
 
-  return { connected, connecting, connectPhase, error, needTapToPlay, start, stop, resumePlay, getAudioTrack };
+  return { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack };
 }

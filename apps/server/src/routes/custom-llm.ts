@@ -12,12 +12,23 @@
 
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import type { Context } from 'hono';
 import { assemblePrompt } from '../prompt/orchestrator.js';
 import { createLlm } from '../providers/llm.js';
 import { getPromptOverride } from '../rtc-prompt-override.js';
 import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index.js';
 import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
+import {
+  detectEnrollIntent,
+  enrollFullLine,
+  enrollGuideLine,
+  enrollReplaceLine,
+  getEnroll,
+  listeningAck,
+  startEnroll,
+} from '../voiceprint/enroll-session.js';
+import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import type { ChatTurn } from '../providers/types.js';
 import type { VolcSpeakerPayload } from '../memory/types.js';
 
@@ -133,6 +144,14 @@ customLlmRoute.post('/chat/completions', async (c) => {
   //    Prefill 开启后 interim 半句也会打进来，弃用的调用火山会 abort 连接——立即写入会污染
   //    event_log/记忆（半句话当 final、串账）。abort 守卫对 barge-in 弃用响应同样正确。
 
+  // —— 声纹对话式注册（批次2）：意图命中 / 录音进行中 → server 直出话术，跳过 LLM 与记忆写入。
+  //    Prefill interim 也会进这里：startEnroll 幂等（final 名字覆盖 interim），话术只播 final 版。
+  const enrollCanned = resolveEnrollCanned(sessionId, userText);
+  if (enrollCanned) {
+    console.log(`[custom-llm] enroll session=${sessionId ?? '-'} canned="${enrollCanned.slice(0, 24)}…"`);
+    return streamCannedReply(c, { model: body.model ?? 'myjavis', text: enrollCanned });
+  }
+
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
   const created = Math.floor(Date.now() / 1000);
@@ -234,6 +253,48 @@ customLlmRoute.post('/chat/completions', async (c) => {
 });
 
 export { customLlmRoute };
+
+/**
+ * 声纹注册流程的直出话术裁决（无命中返回 null → 走正常 LLM 链路）：
+ * 1) 「我是X，记住我」意图：满 3 人拒绝 / 同名重注册 / 正常引导（建 pending 会话）；
+ * 2) 该房间录音进行中：极简倾听哼声（避免 TTS 长回复污染录音，AEC 之外的双保险）。
+ * 意图检测在 recording 检查之前：录音中改口「我是B记住我」可换名重录。
+ */
+function resolveEnrollCanned(roomId: string | undefined, userText: string): string | null {
+  if (!roomId || !userText.trim()) return null;
+  const intent = detectEnrollIntent(userText);
+  if (intent) {
+    const sameName = findByDisplayName(intent.displayName);
+    const existing = listActiveVoiceprints();
+    if (!sameName && existing.length >= MAX_ACTIVE_VOICEPRINTS) {
+      return enrollFullLine(existing.map((r) => r.displayName));
+    }
+    startEnroll(roomId, intent.displayName);
+    return sameName ? enrollReplaceLine(intent.displayName) : enrollGuideLine(intent.displayName);
+  }
+  if (getEnroll(roomId)?.state === 'recording') return listeningAck();
+  return null;
+}
+
+/** 以标准 ChatCompletion SSE 形态直出一段固定文本（火山按正常 LLM 回复送 TTS）。 */
+function streamCannedReply(c: Context, args: { model: string; text: string }): Response {
+  const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const chunk = (delta: Record<string, unknown>, finish: string | null): string =>
+    JSON.stringify({
+      id,
+      object: 'chat.completion.chunk',
+      created,
+      model: args.model,
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    });
+  return streamSSE(c, async (stream) => {
+    await stream.writeSSE({ data: chunk({ role: 'assistant', content: '' }, null) });
+    await stream.writeSSE({ data: chunk({ content: args.text }, null) });
+    await stream.writeSSE({ data: chunk({}, 'stop') });
+    await stream.writeSSE({ data: '[DONE]' });
+  });
+}
 
 function extractSpeakerPayload(
   body: CustomLlmBody,

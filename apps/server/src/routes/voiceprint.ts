@@ -18,17 +18,41 @@ import {
   removeVoiceprint,
   saveVoiceprint,
 } from '../voiceprint/registry.js';
+import {
+  completeEnroll,
+  enrollFailLine,
+  enrollRetryLine,
+  enrollSuccessLine,
+  failEnroll,
+  getEnroll,
+} from '../voiceprint/enroll-session.js';
+import { speakText } from '../providers/rtc-control.js';
 
 const voiceprintRoute = new Hono();
+
+/** 对话式注册：前端通话中轮询本端点，发现 recording 即开旁路录音。 */
+voiceprintRoute.get('/pending', (c) => {
+  const roomId = c.req.query('room')?.trim();
+  if (!roomId) return c.json({ ok: false, error: 'room 必填' }, 400);
+  const session = getEnroll(roomId);
+  return c.json({
+    ok: true,
+    pending: session
+      ? { displayName: session.displayName, state: session.state, attempt: session.attempt }
+      : null,
+  });
+});
 
 voiceprintRoute.post('/register', async (c) => {
   const body = (await c.req.json().catch(() => null)) as {
     displayName?: string;
     wavBase64?: string;
     metaInfo?: string;
+    roomId?: string; // 对话式注册：带上后成败结果经 ExternalTextToSpeech 播报给房间
   } | null;
   const displayName = body?.displayName?.trim();
   const wavBase64 = body?.wavBase64?.trim();
+  const roomId = body?.roomId?.trim() || undefined;
   if (!displayName || !wavBase64) {
     return c.json({ ok: false, error: 'displayName + wavBase64 必填' }, 400);
   }
@@ -53,6 +77,7 @@ voiceprintRoute.post('/register', async (c) => {
   try {
     wavInfo = assertRegisterableWav(wavBase64);
   } catch (err) {
+    if (roomId) reportEnrollFailure(roomId, (err as Error).message);
     return c.json({ ok: false, error: (err as Error).message }, 400);
   }
 
@@ -72,14 +97,30 @@ voiceprintRoute.post('/register', async (c) => {
     }
     const record = saveVoiceprint({ voiceprintId, audioName, displayName, metaInfo: body?.metaInfo });
     console.log(
-      `[voiceprint] registered "${displayName}" id=${voiceprintId} owner=${record.ownerId} dur=${wavInfo.durationSec.toFixed(1)}s${sameName ? ' (重注册)' : ''}`,
+      `[voiceprint] registered "${displayName}" id=${voiceprintId} owner=${record.ownerId} dur=${wavInfo.durationSec.toFixed(1)}s${sameName ? ' (重注册)' : ''}${roomId ? ` room=${roomId}` : ''}`,
     );
+    if (roomId) {
+      completeEnroll(roomId);
+      // 新声纹对「当前」房间不生效（IdList 是 StartVoiceChat 时传的）——播报里如实说"下次"。
+      speakText(roomId, enrollSuccessLine(displayName), false).catch((err) =>
+        console.log(`[voiceprint] 成功播报失败（不阻塞）：${(err as Error).message}`),
+      );
+    }
     return c.json({ ok: true, voiceprint: record, replaced: sameName?.voiceprintId });
   } catch (err) {
     console.log(`[voiceprint] register failed: ${(err as Error).message}`);
+    if (roomId) reportEnrollFailure(roomId, (err as Error).message);
     return c.json({ ok: false, error: (err as Error).message }, 502);
   }
 });
+
+/** 对话式注册失败：还有重试额度 → 让 Javis 请用户再说几句（前端轮询到 recording 会重录）；否则宣告失败。 */
+function reportEnrollFailure(roomId: string, error: string): void {
+  const retryable = failEnroll(roomId, error);
+  speakText(roomId, retryable ? enrollRetryLine() : enrollFailLine(), false).catch((err) =>
+    console.log(`[voiceprint] 失败播报失败（不阻塞）：${(err as Error).message}`),
+  );
+}
 
 voiceprintRoute.get('/list', async (c) => {
   const local = listActiveVoiceprints();
