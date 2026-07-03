@@ -9,6 +9,7 @@
  * WS 路径（/ws/voice，服务端跑 ASR/LLM/TTS 三段）尚为 provider 骨架（volc-asr/volc-tts 待补二进制帧），
  * pipeline.ts 未接线 —— 见 docs/ARCHITECTURE.md。记忆系统当前为占位（NullMemoryStore）。
  */
+import { readFileSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -16,6 +17,18 @@ import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
 import { governanceRoute } from './routes/governance.js';
 import { voiceprintRoute } from './routes/voiceprint.js';
+
+// 版本真源 package.json（dist 运行时向上一级找；与 App 版本同步 bump）
+const VERSION = ((): string => {
+  for (const p of [new URL('../package.json', import.meta.url), new URL('./package.json', import.meta.url)]) {
+    try {
+      return (JSON.parse(readFileSync(p, 'utf-8')) as { version: string }).version;
+    } catch {
+      /* try next */
+    }
+  }
+  return 'unknown';
+})();
 
 const app = new Hono();
 const port = Number(process.env.PORT ?? 3001);
@@ -32,7 +45,7 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 
-app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server' }));
+app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server', version: VERSION }));
 app.route('/api/rtc', rtcRoute);
 app.route('/api/governance', governanceRoute);
 app.route('/api/voiceprint', voiceprintRoute);

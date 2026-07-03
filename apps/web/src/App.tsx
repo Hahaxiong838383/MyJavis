@@ -96,6 +96,7 @@ export default function App() {
 
       <footer style={styles.footer}>
         Pulse 由 RTC 双向真实声音驱动（我说话=麦克风轨 · Javis 说话=TTS 轨 · 音量/音调/停顿实时映射）
+        <span style={styles.version}>MyJavis v{__APP_VERSION__}</span>
       </footer>
     </div>
   );
@@ -142,5 +143,14 @@ const styles: Record<string, React.CSSProperties> = {
   btn: { padding: '14px 40px', borderRadius: 999, border: 'none', fontSize: 16, fontWeight: 700, cursor: 'pointer' },
   btnPrimary: { background: '#22c55e', color: '#04210f' },
   btnStop: { background: '#ef4444', color: '#fff' },
-  footer: { padding: '16px', textAlign: 'center', fontSize: 12, color: '#6b7280' },
+  footer: {
+    padding: '16px',
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#6b7280',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  version: { color: '#4b5563', fontSize: 11, letterSpacing: 0.5 },
 };
