@@ -102,6 +102,18 @@ export function removeVoiceprint(voiceprintId: string): boolean {
   return Number(res.changes) > 0;
 }
 
+/** 改显示名（只动本地映射；火山侧 AudioName slug 与声纹绑定不变，识别链路即时用新名）。 */
+export function renameVoiceprint(voiceprintId: string, displayName: string): VoiceprintRecord | undefined {
+  const res = db
+    .prepare('UPDATE voiceprint SET display_name = ?, updated_at = ? WHERE voiceprint_id = ?')
+    .run(displayName, Date.now(), voiceprintId);
+  if (Number(res.changes) === 0) return undefined;
+  const row = db.prepare('SELECT * FROM voiceprint WHERE voiceprint_id = ?').get(voiceprintId) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? rowToRecord(row) : undefined;
+}
+
 function rowToRecord(row: Record<string, unknown>): VoiceprintRecord {
   return {
     voiceprintId: String(row.voiceprint_id),

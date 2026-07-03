@@ -8,7 +8,7 @@
  * 有效语音 ≥12s（前端录音时按能量估算保证；这里只能验头部）。
  */
 import { Hono } from 'hono';
-import { registerVoicePrint, listVoicePrint, deleteVoicePrint } from '../voiceprint/volc-api.js';
+import { registerVoicePrint, listVoicePrint, deleteVoicePrint, updateVoicePrint } from '../voiceprint/volc-api.js';
 import { assertRegisterableWav } from '../voiceprint/wav.js';
 import {
   MAX_ACTIVE_VOICEPRINTS,
@@ -16,6 +16,7 @@ import {
   listActiveVoiceprints,
   newAudioName,
   removeVoiceprint,
+  renameVoiceprint,
   saveVoiceprint,
 } from '../voiceprint/registry.js';
 import {
@@ -152,6 +153,27 @@ voiceprintRoute.get('/list', async (c) => {
   } catch (err) {
     return c.json({ ok: true, voiceprints: local, remoteError: (err as Error).message });
   }
+});
+
+/** 改显示名（调试面板用）：本地 registry 即时生效（Javis 称呼/记忆归属映射立刻用新名）。 */
+voiceprintRoute.post('/rename', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { voiceprintId?: string; displayName?: string } | null;
+  const voiceprintId = body?.voiceprintId?.trim();
+  const displayName = body?.displayName?.trim();
+  if (!voiceprintId || !displayName) return c.json({ ok: false, error: 'voiceprintId + displayName 必填' }, 400);
+  if (displayName.length > 16) return c.json({ ok: false, error: '名字太长（≤16 字）' }, 400);
+  const conflict = findByDisplayName(displayName);
+  if (conflict && conflict.voiceprintId !== voiceprintId) {
+    return c.json({ ok: false, error: `名字"${displayName}"已被占用` }, 409);
+  }
+  const record = renameVoiceprint(voiceprintId, displayName);
+  if (!record) return c.json({ ok: false, error: '声纹不存在' }, 404);
+  // 火山侧 MetaInfo 顺手同步（非关键，失败不阻塞）
+  updateVoicePrint({ voicePrintId: voiceprintId, metaInfo: `MyJavis ${displayName}` }).catch((err) =>
+    console.log(`[voiceprint] MetaInfo 同步失败（不阻塞）：${(err as Error).message}`),
+  );
+  console.log(`[voiceprint] renamed id=${voiceprintId} → "${displayName}"`);
+  return c.json({ ok: true, voiceprint: record });
 });
 
 voiceprintRoute.delete('/:id', async (c) => {

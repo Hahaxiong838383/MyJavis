@@ -3,6 +3,7 @@ import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useAppStore } from './store';
 import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
+import { VoiceprintPanel } from './components/VoiceprintPanel';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '未连接',
@@ -91,6 +92,7 @@ export default function App() {
           </button>
         )}
 
+        <VoiceprintPanel />
         <GovernancePanel />
       </main>
 

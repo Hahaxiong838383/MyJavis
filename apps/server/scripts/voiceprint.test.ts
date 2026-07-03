@@ -258,3 +258,16 @@ console.log('name-strict.test ✅');
   assert.equal(extractNameReply('David123'), 'David123');
 }
 console.log('name-strict2.test ✅');
+
+// rename（管理面板）
+{
+  const { saveVoiceprint, renameVoiceprint, findByDisplayName, removeVoiceprint, newAudioName } = registry;
+  saveVoiceprint({ voiceprintId: 'vp_rn_1', audioName: newAudioName(), displayName: '旧名' });
+  const renamed = renameVoiceprint('vp_rn_1', '新名');
+  assert.equal(renamed?.displayName, '新名');
+  assert.equal(findByDisplayName('新名')?.voiceprintId, 'vp_rn_1');
+  assert.equal(findByDisplayName('旧名'), undefined);
+  assert.equal(renameVoiceprint('vp_ghost', 'x'), undefined); // 不存在
+  removeVoiceprint('vp_rn_1');
+}
+console.log('rename.test ✅');
