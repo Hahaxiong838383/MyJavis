@@ -410,6 +410,11 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
     return null;
   }
 
+  if (intent.kind === 'play_generic') {
+    // 识别到"想放音乐"但没有具体歌名/歌手（如"播放音乐"）——反问，不静默忽略
+    return '想听谁的歌，或者什么风格？跟我说一声～';
+  }
+
   if (intent.kind === 'control') {
     setPending(roomId, { action: 'control', control: intent.action });
     const acks: Record<string, string> = {
