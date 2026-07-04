@@ -59,4 +59,11 @@ export const config = {
       return req('LLM_MODEL');
     },
   },
+
+  music: {
+    baseUrl: opt('MUSIC_ORCHESTRATOR_URL', ''),
+    apiKey: opt('MUSIC_ORCHESTRATOR_KEY', ''),
+    streamPublicBase: opt('MUSIC_STREAM_PUBLIC_BASE', ''),
+    enabled: Boolean(opt('MUSIC_ORCHESTRATOR_URL', '')),
+  },
 } as const;

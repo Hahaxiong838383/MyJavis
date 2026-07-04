@@ -17,6 +17,7 @@ import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
 import { governanceRoute } from './routes/governance.js';
 import { voiceprintRoute } from './routes/voiceprint.js';
+import { musicRoute } from './routes/music.js';
 
 // 版本真源 package.json（dist 运行时向上一级找；与 App 版本同步 bump）
 const VERSION = ((): string => {
@@ -49,6 +50,7 @@ app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server', vers
 app.route('/api/rtc', rtcRoute);
 app.route('/api/governance', governanceRoute);
 app.route('/api/voiceprint', voiceprintRoute);
+app.route('/api/music', musicRoute);
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 

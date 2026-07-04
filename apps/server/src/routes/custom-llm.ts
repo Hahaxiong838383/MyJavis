@@ -35,6 +35,10 @@ import {
   startEnroll,
   startEnrollAwaitingName,
 } from '../voiceprint/enroll-session.js';
+import { detectMusicIntent } from '../music/music-intent.js';
+import { musicPlay } from '../music/orchestrator-client.js';
+import { setPending } from '../music/pending-store.js';
+import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
 import type { ChatTurn } from '../providers/types.js';
@@ -197,6 +201,12 @@ customLlmRoute.post('/chat/completions', async (c) => {
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: enrollCanned });
   }
 
+  const musicCanned = await resolveMusicCanned(sessionId, userText);
+  if (musicCanned) {
+    console.log(`[custom-llm] music session=${sessionId ?? '-'} canned="${musicCanned.slice(0, 24)}…"`);
+    return streamCannedReply(c, { model: body.model ?? 'myjavis', text: musicCanned });
+  }
+
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
   const created = Math.floor(Date.now() / 1000);
@@ -354,6 +364,65 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string): stri
     }
     return listeningAck();
   }
+  return null;
+}
+
+/**
+ * 音乐意图短路（与 enroll 同级，enroll 已优先）。
+ * 命中后直出话术 + 通过 pending-store 通知前端播放/控制。
+ * 仅当 MUSIC_ORCHESTRATOR_URL 配置时启用，否则优雅返回 null。
+ */
+async function resolveMusicCanned(roomId: string | undefined, userText: string): Promise<string | null> {
+  if (!roomId || !userText.trim() || !config.music.enabled) return null;
+  const intent = detectMusicIntent(userText);
+  if (!intent) return null;
+
+  if (intent.kind === 'play') {
+    const playRes = await musicPlay(intent.query, roomId);
+    if (!playRes) {
+      // 外部服务不可用时给一个温和提示，不阻塞主流程
+      return '音乐服务暂时连不上，稍后再试试？';
+    }
+    if (playRes.status === 'ambiguous' && playRes.candidates && playRes.candidates.length > 0) {
+      const names = playRes.candidates
+        .slice(0, 3)
+        .map((c) => `《${c.title}》`)
+        .join('、');
+      return `找到好几个，你是要${names}吗？`;
+    }
+    if (playRes.status === 'playing' && playRes.track) {
+      const track = playRes.track;
+      const rel = playRes.stream_url || track.stream_url || '';
+      let fullUrl = rel;
+      if (rel && config.music.streamPublicBase) {
+        const base = config.music.streamPublicBase.replace(/\/$/, '');
+        const path = rel.startsWith('/') ? rel : `/${rel}`;
+        fullUrl = `${base}${path}`;
+      }
+      if (fullUrl) {
+        setPending(roomId, { action: 'play', streamUrl: fullUrl, title: track.title });
+      }
+      return `好，给你放《${track.title}》`;
+    }
+    if (playRes.status === 'not_found') {
+      return '没找到这首诶，换个说法试试？';
+    }
+    return null;
+  }
+
+  if (intent.kind === 'control') {
+    setPending(roomId, { action: 'control', control: intent.action });
+    const acks: Record<string, string> = {
+      pause: '好嘞，暂停。',
+      resume: '继续播～',
+      next: '换一首。',
+      prev: '上一首。',
+      louder: '调大声点。',
+      quieter: '小声点。',
+    };
+    return acks[intent.action] || '好。';
+  }
+
   return null;
 }
 

@@ -4,6 +4,7 @@ import { useAppStore } from './store';
 import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
 import { VoiceprintPanel } from './components/VoiceprintPanel';
+import { MusicPlayer } from './components/MusicPlayer';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '未连接',
@@ -94,6 +95,7 @@ export default function App() {
 
         <VoiceprintPanel />
         <GovernancePanel />
+        <MusicPlayer roomId={roomId} connected={connected} />
       </main>
 
       <footer style={styles.footer}>
