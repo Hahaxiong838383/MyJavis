@@ -107,8 +107,17 @@ export async function musicSearch(query: string, sessionId: string, limit = 5): 
   return postJson<MusicSearchResult>('/tools/music_search', { query, limit, session_id: sessionId });
 }
 
-export async function musicPlay(query: string, sessionId: string): Promise<MusicPlayResult | null> {
-  return postJson<MusicPlayResult>('/tools/music_play', { query, mode: 'track', session_id: sessionId });
+export async function musicPlay(
+  query: string,
+  sessionId: string,
+  excludeIds?: string[],
+): Promise<MusicPlayResult | null> {
+  return postJson<MusicPlayResult>('/tools/music_play', {
+    query,
+    mode: 'track',
+    session_id: sessionId,
+    ...(excludeIds && excludeIds.length > 0 ? { exclude_ids: excludeIds } : {}),
+  });
 }
 
 export async function musicControl(

@@ -38,6 +38,7 @@ import {
 import { detectMusicIntent } from '../music/music-intent.js';
 import { musicPlay } from '../music/orchestrator-client.js';
 import { setPending } from '../music/pending-store.js';
+import { getMusicSession, recordPlay } from '../music/music-session.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
@@ -372,6 +373,40 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string): stri
  * 命中后直出话术 + 通过 pending-store 通知前端播放/控制。
  * 仅当 MUSIC_ORCHESTRATOR_URL 配置时启用，否则优雅返回 null。
  */
+/** 拼公网播放 URL（前端 <audio> 用）。 */
+function buildStreamUrl(rel: string): string {
+  if (!rel) return '';
+  if (!config.music.streamPublicBase) return rel;
+  const base = config.music.streamPublicBase.replace(/\/$/, '');
+  const path = rel.startsWith('/') ? rel : `/${rel}`;
+  return `${base}${path}`;
+}
+
+/** playing 结果 → 设播放 pending + 记录（供"换一首"）+ 返回话术；非 playing 返回对应话术。 */
+function handlePlayResult(
+  roomId: string,
+  query: string,
+  playRes: Awaited<ReturnType<typeof musicPlay>>,
+  prefix: string,
+): string {
+  if (!playRes) return '音乐服务暂时连不上，稍后再试试？';
+  if (playRes.status === 'ambiguous' && playRes.candidates && playRes.candidates.length > 0) {
+    const names = playRes.candidates.slice(0, 3).map((c) => `《${c.title}》`).join('、');
+    return `找到好几个，你是要${names}吗？`;
+  }
+  if (playRes.status === 'playing' && playRes.track) {
+    const track = playRes.track;
+    const fullUrl = buildStreamUrl(playRes.stream_url || track.stream_url || '');
+    if (fullUrl) {
+      setPending(roomId, { action: 'play', streamUrl: fullUrl, title: track.title });
+      recordPlay(roomId, query, track.id);
+    }
+    return `${prefix}《${track.title}》`;
+  }
+  if (playRes.status === 'not_found') return '没找到这首诶，换个说法试试？';
+  return '没找到诶，换个说法试试？';
+}
+
 async function resolveMusicCanned(roomId: string | undefined, userText: string): Promise<string | null> {
   if (!roomId || !userText.trim() || !config.music.enabled) return null;
   const intent = detectMusicIntent(userText);
@@ -379,35 +414,7 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
 
   if (intent.kind === 'play') {
     const playRes = await musicPlay(intent.query, roomId);
-    if (!playRes) {
-      // 外部服务不可用时给一个温和提示，不阻塞主流程
-      return '音乐服务暂时连不上，稍后再试试？';
-    }
-    if (playRes.status === 'ambiguous' && playRes.candidates && playRes.candidates.length > 0) {
-      const names = playRes.candidates
-        .slice(0, 3)
-        .map((c) => `《${c.title}》`)
-        .join('、');
-      return `找到好几个，你是要${names}吗？`;
-    }
-    if (playRes.status === 'playing' && playRes.track) {
-      const track = playRes.track;
-      const rel = playRes.stream_url || track.stream_url || '';
-      let fullUrl = rel;
-      if (rel && config.music.streamPublicBase) {
-        const base = config.music.streamPublicBase.replace(/\/$/, '');
-        const path = rel.startsWith('/') ? rel : `/${rel}`;
-        fullUrl = `${base}${path}`;
-      }
-      if (fullUrl) {
-        setPending(roomId, { action: 'play', streamUrl: fullUrl, title: track.title });
-      }
-      return `好，给你放《${track.title}》`;
-    }
-    if (playRes.status === 'not_found') {
-      return '没找到这首诶，换个说法试试？';
-    }
-    return null;
+    return handlePlayResult(roomId, intent.query, playRes, '好，给你放');
   }
 
   if (intent.kind === 'play_generic') {
@@ -416,11 +423,20 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
   }
 
   if (intent.kind === 'control') {
+    // "换一首/下一首"：用上次的 query 重搜、排除已放过的，真换一首歌（不是空 stub）
+    if (intent.action === 'next') {
+      const ms = getMusicSession(roomId);
+      if (ms?.lastQuery) {
+        const playRes = await musicPlay(ms.lastQuery, roomId, ms.playedIds);
+        return handlePlayResult(roomId, ms.lastQuery, playRes, '换一首，给你放');
+      }
+      return '现在还没在放歌呢，想听什么跟我说～';
+    }
+    // 其余控制（暂停/继续/上一首/音量）走前端 <audio> 控制
     setPending(roomId, { action: 'control', control: intent.action });
     const acks: Record<string, string> = {
       pause: '好嘞，暂停。',
       resume: '继续播～',
-      next: '换一首。',
       prev: '上一首。',
       louder: '调大声点。',
       quieter: '小声点。',
