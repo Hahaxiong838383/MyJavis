@@ -48,6 +48,11 @@ export interface UseVoiceRtc {
    * remote=Javis bot 的 TTS 下行轨。未连接/未订阅时返回 undefined（球回退合成动画）。
    */
   getAudioTrack: (kind: 'local' | 'remote') => MediaStreamTrack | undefined;
+  /**
+   * 静音/恢复上行麦克风（音乐守护态用）：setCaptureVolume 置 0 仍持续发静音帧——
+   * 火山任务正常挂着但 ASR 听不到任何内容（零误触发），轨道保留（律动球分析源不丢）。
+   */
+  setMicMuted: (muted: boolean) => void;
 }
 
 const BOT_USER_ID = 'myjavis_bot'; // 与 server rtc.ts AgentConfig.UserId 一致
@@ -273,5 +278,17 @@ export function useVoiceRtc(): UseVoiceRtc {
     }
   }, []);
 
-  return { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack };
+  const setMicMuted = useCallback((muted: boolean) => {
+    const engine = engineRef.current;
+    const streamIndexMain = streamIndexMainRef.current;
+    if (!engine || streamIndexMain === null) return;
+    try {
+      engine.setCaptureVolume(streamIndexMain, muted ? 0 : 100);
+      console.log(`[guard] mic ${muted ? 'muted' : 'unmuted'}`);
+    } catch (e) {
+      console.log('[guard] setCaptureVolume failed:', (e as Error)?.message);
+    }
+  }, []);
+
+  return { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted };
 }

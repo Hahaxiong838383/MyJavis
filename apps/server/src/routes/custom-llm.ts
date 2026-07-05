@@ -39,6 +39,7 @@ import { detectMusicIntent } from '../music/music-intent.js';
 import { musicPlay } from '../music/orchestrator-client.js';
 import { setPending } from '../music/pending-store.js';
 import { getMusicSession, recordPlay } from '../music/music-session.js';
+import { buildStreamUrl } from '../music/stream-url.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
@@ -373,15 +374,6 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string): stri
  * 命中后直出话术 + 通过 pending-store 通知前端播放/控制。
  * 仅当 MUSIC_ORCHESTRATOR_URL 配置时启用，否则优雅返回 null。
  */
-/** 拼公网播放 URL（前端 <audio> 用）。 */
-function buildStreamUrl(rel: string): string {
-  if (!rel) return '';
-  if (!config.music.streamPublicBase) return rel;
-  const base = config.music.streamPublicBase.replace(/\/$/, '');
-  const path = rel.startsWith('/') ? rel : `/${rel}`;
-  return `${base}${path}`;
-}
-
 /** playing 结果 → 设播放 pending + 记录（供"换一首"）+ 返回话术；非 playing 返回对应话术。 */
 function handlePlayResult(
   roomId: string,

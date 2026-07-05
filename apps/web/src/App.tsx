@@ -1,5 +1,6 @@
 import { useVoiceRtc } from './useVoiceRtc';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
+import { useMusicGuard } from './useMusicGuard';
 import { useAppStore } from './store';
 import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
@@ -20,22 +21,33 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
-  const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack } =
+  const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted } =
     useVoiceRtc();
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
+  const { guardState, wake, waking } = useMusicGuard({ connected, roomId, setMicMuted });
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
   const speakerName = useAppStore((s) => s.speakerName);
 
+  // 守护态点击律动球 = PTT 唤醒（步 3 KWS 上线后由"贾维斯"唤醒词替代）
+  const orbLabel = connecting
+    ? PHASE_LABEL[connectPhase] ?? '连接中…'
+    : waking
+      ? '唤醒中…'
+      : guardState === 'guarded'
+        ? '听歌中 · 点我唤醒 Javis'
+        : STATUS_LABEL[voiceStatus];
+
   return (
     <div style={styles.page}>
-      <div style={styles.orbZone}>
-        <PulseOrb
-          phase={voiceStatus}
-          label={connecting ? PHASE_LABEL[connectPhase] ?? '连接中…' : STATUS_LABEL[voiceStatus]}
-          getAudioTrack={getAudioTrack}
-        />
+      <div
+        style={{ ...styles.orbZone, cursor: guardState === 'guarded' ? 'pointer' : 'default' }}
+        onClick={() => {
+          if (guardState === 'guarded') wake();
+        }}
+      >
+        <PulseOrb phase={voiceStatus} label={orbLabel} getAudioTrack={getAudioTrack} />
       </div>
 
       <main style={styles.main}>

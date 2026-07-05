@@ -56,7 +56,19 @@ interface VoiceChatOptions {
   voiceMode: VoiceMode;
   voiceprintIds: string[];
   voiceprintScore: number;
+  /** resume-agent 用：覆盖 welcome（置空防止重启任务时重播开场白）。undefined=用默认。 */
+  welcomeOverride?: string;
 }
+
+/**
+ * 房间级会话参数（音乐守护"省钱模式"的 pause/resume-agent 用）：
+ * resume 重启任务必须复用原 userId（前端还在房间里用这个身份），memoryUser/voiceMode 同理。
+ * 内存态，server 重启丢失可接受（房间生命周期短于 server 运行周期）。
+ */
+const agentSessions = new Map<
+  string,
+  { userId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number }
+>();
 
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
 function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOptions): Record<string, unknown> {
@@ -70,7 +82,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
     TaskId: roomId, // 一房一任务（火山要求 TaskId 非空）
     AgentConfig: {
       TargetUserId: [userId],
-      WelcomeMessage: WELCOME,
+      WelcomeMessage: opts.welcomeOverride !== undefined ? opts.welcomeOverride : WELCOME,
       UserId: 'myjavis_bot', // ★ 必须 ASCII，中文报 invalid UserID
       EnableConversationStateCallback: true,
       ...(opts.voiceprintIds.length > 0 ? { VoicePrint: voicePrint } : {}),
@@ -186,7 +198,61 @@ rtcRoute.post('/start', async (c) => {
   }
 
   console.log(`[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length}`);
+  agentSessions.set(roomId, { userId, memoryUser, voiceMode, voiceprintScore });
   return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
+});
+
+/**
+ * 音乐守护"省钱模式"：暂停 AI 任务（StopVoiceChat）。房间和用户不动，只停 AI agent
+ * （零空转计费）；resume-agent 同房间重启。⚠️ 火山任务停止即丢对话 history（省钱模式
+ * 固有代价，D1 拍板已知悉）。不清 promptOverride（区别于 /stop 的完整清理）。
+ */
+rtcRoute.post('/pause-agent', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { roomId?: string };
+  const roomId = body.roomId?.trim();
+  if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
+  const result = await callRtcOpenAPI('StopVoiceChat', {
+    AppId: process.env.VOLC_RTC_APP_ID,
+    RoomId: roomId,
+    TaskId: roomId,
+  });
+  const err = result?.ResponseMetadata?.Error;
+  if (err) {
+    console.log(`[rtc] pause-agent failed room=${roomId}: ${err.Code} ${err.Message}`);
+    return c.json({ ok: false, error: `${err.Code}: ${err.Message}` }, 502);
+  }
+  console.log(`[rtc] agent paused (save mode) room=${roomId}`);
+  return c.json({ ok: true });
+});
+
+/**
+ * 音乐守护"省钱模式"：唤醒时同房间重启 AI 任务。welcome 置空（不重播开场白）；
+ * 声纹 IdList 从 registry 现拉（副作用红利：新注册声纹重启即生效）。
+ */
+rtcRoute.post('/resume-agent', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { roomId?: string };
+  const roomId = body.roomId?.trim();
+  if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
+  const sess = agentSessions.get(roomId);
+  if (!sess) return c.json({ ok: false, error: 'unknown room（server 可能重启过，请重新开始对话）' }, 404);
+  const voiceprintIds = listActiveVoiceprints().map((r) => r.voiceprintId);
+  const result = await callRtcOpenAPI(
+    'StartVoiceChat',
+    buildVoiceChatConfig(roomId, sess.userId, {
+      memoryUser: sess.memoryUser,
+      voiceMode: sess.voiceMode,
+      voiceprintIds,
+      voiceprintScore: sess.voiceprintScore,
+      welcomeOverride: '', // 唤醒重启不重播开场白
+    }),
+  );
+  const err = result?.ResponseMetadata?.Error;
+  if (err) {
+    console.log(`[rtc] resume-agent failed room=${roomId}: ${err.Code} ${err.Message}`);
+    return c.json({ ok: false, error: `${err.Code}: ${err.Message}` }, 502);
+  }
+  console.log(`[rtc] agent resumed room=${roomId} voiceprints=${voiceprintIds.length}`);
+  return c.json({ ok: true });
 });
 
 /** 停止本局（前端离房时调）。 */
@@ -196,6 +262,7 @@ rtcRoute.post('/stop', async (c) => {
   const taskId = body.taskId || roomId;
   if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
   clearPromptOverride(roomId);
+  agentSessions.delete(roomId);
   const result = await callRtcOpenAPI('StopVoiceChat', {
     AppId: process.env.VOLC_RTC_APP_ID,
     RoomId: roomId,
