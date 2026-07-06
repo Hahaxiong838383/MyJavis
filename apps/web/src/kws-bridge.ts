@@ -44,3 +44,22 @@ export async function onKwsWake(cb: (keyword: string) => void): Promise<(() => v
     return null;
   }
 }
+
+/** 订阅 KWS 运行时错误（如双进程采麦被拒/资源缺失）——用于 UI 提示回退点球唤醒。 */
+export async function onKwsError(cb: (msg: string) => void): Promise<(() => void) | null> {
+  if (!isTauri()) return null;
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<string>('kws-error', (event) => {
+      cb(String(event.payload ?? 'unknown'));
+    });
+    return unlisten;
+  } catch {
+    return null;
+  }
+}
+
+/** 是否 Tauri 桌面环境（决定 guard 标签显示"喊贾维斯"还是"点我唤醒"）。 */
+export function kwsAvailable(): boolean {
+  return isTauri();
+}

@@ -408,6 +408,28 @@ function shortTitle(title: string, query?: string): string {
   return title.length > 18 ? `${title.slice(0, 18)}…` : title;
 }
 
+/**
+ * play 提交去抖（2026-07-06 真机日志实锤修复）：火山 Prefill 的 interim 半句同样会打进
+ * custom-llm——"给我播放周杰伦其他的歌"途中，半句"给我播放周杰""播放一"各自命中意图、
+ * 各自 setPending 真的播了歌（前端轮询恰好取走 interim 版）。修：播放指令延迟 800ms 提交，
+ * 期间同房间新的 play 意图覆盖旧的（final 总在 interim 之后 <1s 内到）——最后一个赢。
+ * 800ms 延迟被"好，给你放"的 TTS 播报完全掩盖，体感无感。
+ */
+const playCommitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function schedulePlayCommit(roomId: string, cmd: { streamUrl: string; title: string }, query: string, trackId: string): void {
+  const old = playCommitTimers.get(roomId);
+  if (old) clearTimeout(old);
+  playCommitTimers.set(
+    roomId,
+    setTimeout(() => {
+      playCommitTimers.delete(roomId);
+      setPending(roomId, { action: 'play', streamUrl: cmd.streamUrl, title: cmd.title });
+      recordPlay(roomId, query, trackId);
+      console.log(`[music] play committed room=${roomId} "${cmd.title.slice(0, 24)}"`);
+    }, 800),
+  );
+}
+
 /** playing 结果 → 设播放 pending + 记录（供"换一首"）+ 返回话术；ambiguous 存候选反问。 */
 function handlePlayResult(
   roomId: string,
@@ -432,8 +454,7 @@ function handlePlayResult(
     const track = playRes.track;
     const fullUrl = buildStreamUrl(playRes.stream_url || track.stream_url || '');
     if (fullUrl) {
-      setPending(roomId, { action: 'play', streamUrl: fullUrl, title: track.title });
-      recordPlay(roomId, query, track.id);
+      schedulePlayCommit(roomId, { streamUrl: fullUrl, title: track.title }, query, track.id);
     }
     return `${prefix}《${shortTitle(track.title, query)}》`;
   }
@@ -510,6 +531,16 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
   if (!intent) return null;
 
   if (intent.kind === 'play') {
+    // "播放别的 / 周杰伦其他的歌"——"别的/其他"是换歌语义不是歌名（真机曾搜出歌名叫
+    // 《别的》的视频）：剥掉修饰词，剩余部分（或上次 query）+ 排除已放列表 → next 语义
+    if (/(别的|其他|其它|另外)/.test(intent.query)) {
+      const cleaned = intent.query.replace(/的?(别的|其他的?|其它的?|另外的?)(歌|音乐|曲子)?/g, '').trim();
+      const ms = getMusicSession(roomId);
+      const query = cleaned || ms?.lastQuery || '';
+      if (!query) return '想听谁的歌，或者什么风格？跟我说一声～';
+      const playRes = await musicPlay(query, roomId, ms?.playedIds);
+      return handlePlayResult(roomId, query, playRes, '换一首，给你放');
+    }
     const playRes = await musicPlay(intent.query, roomId);
     return handlePlayResult(roomId, intent.query, playRes, '好，给你放');
   }

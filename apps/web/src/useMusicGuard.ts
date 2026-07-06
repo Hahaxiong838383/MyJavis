@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from './store';
 import { apiFetch } from './api';
-import { kwsStart, kwsStop, onKwsWake } from './kws-bridge';
+import { kwsAvailable, kwsStart, kwsStop, onKwsError, onKwsWake } from './kws-bridge';
 
 export type GuardState = 'idle' | 'guarded' | 'active';
 export type GuardMode = 'respond' | 'save';
@@ -55,11 +55,13 @@ function playChime(): void {
   }
 }
 
+export type KwsStatus = 'unavailable' | 'active' | 'error';
+
 export function useMusicGuard(args: {
   connected: boolean;
   roomId: string | null;
   setMicMuted: (muted: boolean) => void;
-}): { guardState: GuardState; guardMode: GuardMode; wake: () => void; waking: boolean } {
+}): { guardState: GuardState; guardMode: GuardMode; wake: () => void; waking: boolean; kwsStatus: KwsStatus } {
   const { connected, roomId, setMicMuted } = args;
   const musicPlaying = useAppStore((s) => s.musicPlaying);
   const voiceStatus = useAppStore((s) => s.voiceStatus);
@@ -70,6 +72,7 @@ export function useMusicGuard(args: {
   const [guardState, setGuardState] = useState<GuardState>('idle');
   const [guardMode, setGuardMode] = useState<GuardMode>('save');
   const [waking, setWaking] = useState(false);
+  const [kwsStatus, setKwsStatus] = useState<KwsStatus>(kwsAvailable() ? 'active' : 'unavailable');
   const followupTimer = useRef<number | null>(null);
   const roomIdRef = useRef<string | null>(null);
   roomIdRef.current = roomId;
@@ -195,18 +198,26 @@ export function useMusicGuard(args: {
   useEffect(() => {
     if (guardState !== 'guarded') return;
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const unlistens: Array<() => void> = [];
     void kwsStart();
     void onKwsWake((keyword) => {
       console.log(`[guard] kws-wake "${keyword}"`);
       wakeRef.current();
     }).then((u) => {
       if (disposed) u?.();
-      else unlisten = u;
+      else if (u) unlistens.push(u);
+    });
+    // KWS 运行时错误（双进程采麦被拒/资源缺失等）→ UI 降级提示"点我唤醒"，点球兜底仍可用
+    void onKwsError((msg) => {
+      console.log(`[guard] kws-error: ${msg}`);
+      setKwsStatus('error');
+    }).then((u) => {
+      if (disposed) u?.();
+      else if (u) unlistens.push(u);
     });
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistens.forEach((u) => u());
       void kwsStop();
     };
   }, [guardState]);
@@ -231,5 +242,5 @@ export function useMusicGuard(args: {
     // subtitle/userSubtitle 变化也会重跑本 effect = 重置计时器（用户在说话/bot 在出字）
   }, [guardState, voiceStatus, subtitle, userSubtitle, guardMode, muteUplink, setMusicDuck, clearFollowupTimer]);
 
-  return { guardState, guardMode, wake, waking };
+  return { guardState, guardMode, wake, waking, kwsStatus };
 }

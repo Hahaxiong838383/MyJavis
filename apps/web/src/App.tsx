@@ -41,19 +41,21 @@ function MainApp() {
   const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted } =
     useVoiceRtc();
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
-  const { guardState, wake, waking } = useMusicGuard({ connected, roomId, setMicMuted });
+  const { guardState, wake, waking, kwsStatus } = useMusicGuard({ connected, roomId, setMicMuted });
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
   const speakerName = useAppStore((s) => s.speakerName);
 
-  // 守护态点击律动球 = PTT 唤醒（步 3 KWS 上线后由"贾维斯"唤醒词替代）
+  // 守护态标签按 KWS 可用性区分：桌面 App KWS 正常=喊贾维斯；异常/浏览器=点球兜底
+  const guardedLabel =
+    kwsStatus === 'active' ? '听歌中 · 喊"贾维斯贾维斯"或点我唤醒' : '听歌中 · 点我唤醒 Javis';
   const orbLabel = connecting
     ? PHASE_LABEL[connectPhase] ?? '连接中…'
     : waking
       ? '唤醒中…'
       : guardState === 'guarded'
-        ? '听歌中 · 点我唤醒 Javis'
+        ? guardedLabel
         : STATUS_LABEL[voiceStatus];
 
   return (
