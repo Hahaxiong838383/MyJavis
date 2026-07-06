@@ -1,7 +1,13 @@
 # MyJavis — 进展与后续计划(HANDOFF)
 
-> 更新:2026-07-02(cc,二)。接手先读本文件 → `docs/PRODUCT-DEFINITION.md`(总纲)→ 对应子文档。
-> 一句话:个人 Jarvis 式实时语音助手(火山 RTC 全双工 + 声纹区分说话人 + 可控进化记忆 + 律动球前端)。**🎉 2026-07-02 全链路打通+感知层调优完成(川哥多轮真机验收 OK)**。拓扑:App→javis.chenchuan.cc(47.239 HK ECS);火山回调→kidshub-ai.hahaxiong.cc/myjavis/(8.218 中转+keepalive)→47.239。LLM=DeepSeek/MiniMax 双路赛马(TTFT ~500ms);承接句 5 桶语义分桶 0ms 直插;TTS 防旁白双保险;think/markdown/emoji 出口全剥。详见 memory `project_myjavis`。下一批:声纹接真/律动球接火山音频属性/方舟豆包第三路。
+> 更新:2026-07-06(cc)。接手先读本文件 → `docs/PRODUCT-DEFINITION.md`(总纲)→ memory `project_myjavis`(最全)。
+> 一句话:个人 Jarvis 式实时语音助手(火山 RTC 全双工 + 声纹认人 + 分人记忆 + 律动球),**已进入 ≤10 人邀请制内测阶段**。
+>
+> **仓库**:独立私有仓 `github.com/Hahaxiong838383/MyJavis`(2026-07-03 从 oh-my-ccwork subtree split 独立,commit/push 在本目录,不进 monorepo)。
+>
+> **当前版本 v0.8.2**。核心已全通:声纹注册(说"我是X,记住我的声音"零UI)+识别认人+记忆分账;多租户(邀请码 jv-xxxxx-xxxxx,每人独立声纹/记忆/人设/称呼);分发(DMG https://javis.chenchuan.cc/updates/ + 激活页 + tauri updater 自动更新,双向实证)。发版=`scripts/release-app.sh "说明"` 一条命令(自动摘 admin key+minisign 签名+上传)。
+> 拓扑:App→javis.chenchuan.cc(47.239 HK);火山回调→kidshub-ai.hahaxiong.cc/myjavis/(8.218 中转)→47.239。LLM=DeepSeek/MiniMax 赛马;判停 300ms+AIVAD+Prefill;承接句 5 桶直插。
+> ⚠️ updater 私钥 `~/.tauri/myjavis-updater.key` 丢失=无法再推更新(待备份密码管理器)。
 
 ---
 
