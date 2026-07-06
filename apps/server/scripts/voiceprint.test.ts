@@ -64,23 +64,23 @@ assert.throws(() => assertRegisterableWav(makeWav({ bits: 8 }).toString('base64'
   const name1 = newAudioName();
   assert.match(name1, /^jv_[0-9a-f]{8}$/);
 
-  const rec = saveVoiceprint({ voiceprintId: 'vp_test_001', audioName: name1, displayName: '川哥' });
+  const rec = saveVoiceprint({ voiceprintId: 'vp_test_001', tenantId: 'tn_test', audioName: name1, displayName: '川哥' });
   assert.equal(rec.displayName, '川哥');
   assert.match(rec.ownerId, /^owner_[0-9a-f]{16}$/); // 与 identity 层同派生
 
-  saveVoiceprint({ voiceprintId: 'vp_test_002', audioName: newAudioName(), displayName: '嫂子' });
-  assert.equal(listActiveVoiceprints().length, 2);
-  assert.equal(findByDisplayName('川哥')?.voiceprintId, 'vp_test_001');
+  saveVoiceprint({ voiceprintId: 'vp_test_002', tenantId: 'tn_test', audioName: newAudioName(), displayName: '嫂子' });
+  assert.equal(listActiveVoiceprints('tn_test').length, 2);
+  assert.equal(findByDisplayName('tn_test', '川哥')?.voiceprintId, 'vp_test_001');
   assert.equal(findByAudioName(name1)?.displayName, '川哥');
 
   // upsert：同 voiceprintId 重存 = 更新
-  saveVoiceprint({ voiceprintId: 'vp_test_001', audioName: name1, displayName: '川哥v2' });
-  assert.equal(listActiveVoiceprints().length, 2);
-  assert.equal(findByDisplayName('川哥v2')?.voiceprintId, 'vp_test_001');
+  saveVoiceprint({ voiceprintId: 'vp_test_001', tenantId: 'tn_test', audioName: name1, displayName: '川哥v2' });
+  assert.equal(listActiveVoiceprints('tn_test').length, 2);
+  assert.equal(findByDisplayName('tn_test', '川哥v2')?.voiceprintId, 'vp_test_001');
 
   assert.equal(removeVoiceprint('vp_test_001'), true);
   assert.equal(removeVoiceprint('vp_test_001'), false); // 已删
-  assert.equal(listActiveVoiceprints().length, 1);
+  assert.equal(listActiveVoiceprints('tn_test').length, 1);
 }
 
 console.log('voiceprint.test ✅ 全部通过');
@@ -167,7 +167,7 @@ console.log('enroll-session.test ✅ 全部通过');
 
   // registry 反查 → payload → identity 定级
   const an = newAudioName();
-  saveVoiceprint({ voiceprintId: 'vp_tag_test', audioName: an, displayName: '川哥' });
+  saveVoiceprint({ voiceprintId: 'vp_tag_test', tenantId: 'tn_test', audioName: an, displayName: '川哥' });
   const resolved = resolveSpeakerFromTag(an, 'room-x');
   assert.equal(resolved.record?.displayName, '川哥');
   assert.equal(resolved.payload.status, 'active');
@@ -262,12 +262,47 @@ console.log('name-strict2.test ✅');
 // rename（管理面板）
 {
   const { saveVoiceprint, renameVoiceprint, findByDisplayName, removeVoiceprint, newAudioName } = registry;
-  saveVoiceprint({ voiceprintId: 'vp_rn_1', audioName: newAudioName(), displayName: '旧名' });
+  saveVoiceprint({ voiceprintId: 'vp_rn_1', tenantId: 'tn_test', audioName: newAudioName(), displayName: '旧名' });
   const renamed = renameVoiceprint('vp_rn_1', '新名');
   assert.equal(renamed?.displayName, '新名');
-  assert.equal(findByDisplayName('新名')?.voiceprintId, 'vp_rn_1');
-  assert.equal(findByDisplayName('旧名'), undefined);
+  assert.equal(findByDisplayName('tn_test', '新名')?.voiceprintId, 'vp_rn_1');
+  assert.equal(findByDisplayName('tn_test', '旧名'), undefined);
   assert.equal(renameVoiceprint('vp_ghost', 'x'), undefined); // 不存在
   removeVoiceprint('vp_rn_1');
 }
 console.log('rename.test ✅');
+
+// ---------- 多租户（批次A）：tenant registry + 声纹隔离 ----------
+{
+  const { createTenant, findTenantByToken, updateTenantConfig, newInviteToken } = await import(
+    '../src/tenant/registry.js'
+  );
+  const { saveVoiceprint, listActiveVoiceprints, findByDisplayName, tenantOwnsOwner, newAudioName } = registry;
+
+  assert.match(newInviteToken(), /^jv-[a-z2-9]{5}-[a-z2-9]{5}$/);
+
+  const ta = createTenant('租户A');
+  const tb = createTenant('租户B');
+  assert.equal(findTenantByToken(ta.token)?.id, ta.id);
+  assert.equal(findTenantByToken('jv-fake0-fake0'), undefined);
+
+  // 吊销后 token 失效
+  updateTenantConfig(tb.id, { status: 'revoked' });
+  assert.equal(findTenantByToken(tb.token), undefined);
+  updateTenantConfig(tb.id, { status: 'active' });
+
+  // persona/称呼自配
+  updateTenantConfig(ta.id, { personaExtra: '喜欢用东北话', userTitle: '陈总' });
+  assert.equal(findTenantByToken(ta.token)?.personaExtra, '喜欢用东北话');
+  assert.equal(findTenantByToken(ta.token)?.userTitle, '陈总');
+
+  // 声纹租户隔离
+  const recA = saveVoiceprint({ voiceprintId: 'vp_ta_1', tenantId: ta.id, audioName: newAudioName(), displayName: '甲' });
+  saveVoiceprint({ voiceprintId: 'vp_tb_1', tenantId: tb.id, audioName: newAudioName(), displayName: '乙' });
+  assert.equal(listActiveVoiceprints(ta.id).length, 1);
+  assert.equal(listActiveVoiceprints(tb.id).length, 1);
+  assert.equal(findByDisplayName(ta.id, '乙'), undefined); // A 看不到 B 的
+  assert.equal(tenantOwnsOwner(ta.id, recA.ownerId), true);
+  assert.equal(tenantOwnsOwner(tb.id, recA.ownerId), false); // 治理归属校验
+}
+console.log('tenant.test ✅');

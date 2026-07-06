@@ -13,6 +13,7 @@ import { assertRegisterableWav } from '../voiceprint/wav.js';
 import {
   MAX_ACTIVE_VOICEPRINTS,
   findByDisplayName,
+  getVoiceprint,
   listActiveVoiceprints,
   newAudioName,
   removeVoiceprint,
@@ -28,8 +29,17 @@ import {
   getEnroll,
 } from '../voiceprint/enroll-session.js';
 import { speakText } from '../providers/rtc-control.js';
+import { effectiveTenant, type AppEnv } from '../tenant/context.js';
+import type { Tenant } from '../tenant/registry.js';
+import type { Context } from 'hono';
 
-const voiceprintRoute = new Hono();
+const voiceprintRoute = new Hono<AppEnv>();
+
+/** 全部声纹端点都要求租户上下文（admin 走 ?tenantId= 或 DEFAULT_ADMIN_TENANT）。 */
+function requireTenant(c: Context<AppEnv>): Tenant | Response {
+  const tenant = effectiveTenant(c);
+  return tenant ?? c.json({ ok: false, error: '无租户上下文（admin 需 ?tenantId= 或配 DEFAULT_ADMIN_TENANT）' }, 400);
+}
 
 /** 对话式注册：前端通话中轮询本端点，发现 recording 即开旁路录音。 */
 voiceprintRoute.get('/pending', (c) => {
@@ -71,6 +81,8 @@ voiceprintRoute.post('/register', async (c) => {
     effectiveSec?: number; // 前端能量估算的有效语音秒数（观测样本质量）
     totalSec?: number;
   } | null;
+  const tenant = requireTenant(c);
+  if (tenant instanceof Response) return tenant;
   const displayName = body?.displayName?.trim();
   const wavBase64 = body?.wavBase64?.trim();
   const roomId = body?.roomId?.trim() || undefined;
@@ -81,8 +93,8 @@ voiceprintRoute.post('/register', async (c) => {
     return c.json({ ok: false, error: '名字太长（≤16 字）' }, 400);
   }
 
-  const existing = listActiveVoiceprints();
-  const sameName = findByDisplayName(displayName);
+  const existing = listActiveVoiceprints(tenant.id);
+  const sameName = findByDisplayName(tenant.id, displayName);
   if (!sameName && existing.length >= MAX_ACTIVE_VOICEPRINTS) {
     return c.json(
       {
@@ -116,7 +128,7 @@ voiceprintRoute.post('/register', async (c) => {
       );
       removeVoiceprint(sameName.voiceprintId);
     }
-    const record = saveVoiceprint({ voiceprintId, audioName, displayName, metaInfo: body?.metaInfo });
+    const record = saveVoiceprint({ voiceprintId, tenantId: tenant.id, audioName, displayName, metaInfo: body?.metaInfo });
     console.log(
       `[voiceprint] registered "${displayName}" id=${voiceprintId} owner=${record.ownerId} dur=${wavInfo.durationSec.toFixed(1)}s` +
         `${body?.effectiveSec != null ? ` effective=${Number(body.effectiveSec).toFixed(1)}s` : ''}${sameName ? ' (重注册)' : ''}${roomId ? ` room=${roomId}` : ''}`,
@@ -145,8 +157,11 @@ function reportEnrollFailure(roomId: string, error: string): void {
 }
 
 voiceprintRoute.get('/list', async (c) => {
-  const local = listActiveVoiceprints();
+  const tenant = requireTenant(c);
+  if (tenant instanceof Response) return tenant;
+  const local = listActiveVoiceprints(tenant.id);
   if (c.req.query('remote') !== '1') return c.json({ ok: true, voiceprints: local });
+  if (!c.get('isAdmin')) return c.json({ ok: true, voiceprints: local }); // 火山全量对账仅 admin
   try {
     const remote = await listVoicePrint();
     return c.json({ ok: true, voiceprints: local, remote });
@@ -157,12 +172,16 @@ voiceprintRoute.get('/list', async (c) => {
 
 /** 改显示名（调试面板用）：本地 registry 即时生效（Javis 称呼/记忆归属映射立刻用新名）。 */
 voiceprintRoute.post('/rename', async (c) => {
+  const tenant = requireTenant(c);
+  if (tenant instanceof Response) return tenant;
   const body = (await c.req.json().catch(() => null)) as { voiceprintId?: string; displayName?: string } | null;
   const voiceprintId = body?.voiceprintId?.trim();
   const displayName = body?.displayName?.trim();
   if (!voiceprintId || !displayName) return c.json({ ok: false, error: 'voiceprintId + displayName 必填' }, 400);
   if (displayName.length > 16) return c.json({ ok: false, error: '名字太长（≤16 字）' }, 400);
-  const conflict = findByDisplayName(displayName);
+  const target = getVoiceprint(voiceprintId);
+  if (!target || target.tenantId !== tenant.id) return c.json({ ok: false, error: '声纹不存在' }, 404);
+  const conflict = findByDisplayName(tenant.id, displayName);
   if (conflict && conflict.voiceprintId !== voiceprintId) {
     return c.json({ ok: false, error: `名字"${displayName}"已被占用` }, 409);
   }
@@ -177,8 +196,12 @@ voiceprintRoute.post('/rename', async (c) => {
 });
 
 voiceprintRoute.delete('/:id', async (c) => {
+  const tenant = requireTenant(c);
+  if (tenant instanceof Response) return tenant;
   const voiceprintId = c.req.param('id')?.trim();
   if (!voiceprintId) return c.json({ ok: false, error: '声纹 ID 必填' }, 400);
+  const target = getVoiceprint(voiceprintId);
+  if (!target || target.tenantId !== tenant.id) return c.json({ ok: false, error: '声纹不存在' }, 404);
   try {
     await deleteVoicePrint(voiceprintId);
   } catch (err) {

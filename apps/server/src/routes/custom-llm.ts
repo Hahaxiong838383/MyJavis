@@ -43,6 +43,7 @@ import { buildStreamUrl } from '../music/stream-url.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
+import { getTenant } from '../tenant/registry.js';
 import type { ChatTurn } from '../providers/types.js';
 import type { VolcSpeakerPayload } from '../memory/types.js';
 
@@ -107,8 +108,13 @@ customLlmRoute.post('/chat/completions', async (c) => {
 
   const sessionId = c.req.query('session') ?? undefined; // roomId → prompt override 键
   const userId = c.req.query('user') ?? undefined; // mock voiceprintId / 后续 account hint
-  // 身份来源优先级：火山标签（生产真实信号）> body.speaker_evidence（预留）> query mock（调试）
-  const tagSpeaker = speakerAudioName ? resolveSpeakerFromTag(speakerAudioName, sessionId) : undefined;
+  // 租户上下文（批次A）：/rtc/start 拼进回调 URL 的 ?tenant=；载入自配 persona/称呼。
+  const tenant = getTenant(c.req.query('tenant')?.trim() ?? '') ?? undefined;
+  // 身份来源优先级：火山标签（生产真实信号）> body.speaker_evidence（预留）> query mock（调试）。
+  // 标签归属校验：反查出的声纹若不属于本房间租户（理论上不可能，IdList 只带本租户），按无标签处理。
+  const rawTagSpeaker = speakerAudioName ? resolveSpeakerFromTag(speakerAudioName, sessionId) : undefined;
+  const tagSpeaker =
+    rawTagSpeaker?.record && tenant && rawTagSpeaker.record.tenantId !== tenant.id ? undefined : rawTagSpeaker;
   const speakerPayload =
     tagSpeaker?.payload ??
     extractSpeakerPayload(body, {
@@ -170,14 +176,19 @@ customLlmRoute.post('/chat/completions', async (c) => {
   // 身份注入走 contextNote（history 之后、当前消息之前=近因最强位）：放 system 尾部会被
   // history 惯性压过——真机实证 history 里 assistant 说过"认错了"后，LLM 无视身份段继续
   // 说"没法通过声音认人"（幻觉理由）。措辞明确指示覆盖历史立场。
+  // 无声纹身份时用租户自配称呼兜底（措辞区分：声纹=确认；称呼=礼貌默认，不冒充身份判断）。
   const speakerNote = speakerName
     ? `[系统确认] 当前说话的是：${speakerName}。你能听出 TA 的声音。直接用名字自然称呼；` +
       `即使前面对话里你说过"不认识/认错了"，现在已确认，无需道歉解释，正常继续即可。` +
       `不要提"声纹/识别/系统/确认"这类机制词。`
-    : undefined;
+    : tenant?.userTitle
+      ? `称呼提示：如需称呼对方且不确定对方是谁，用「${tenant.userTitle}」。不要提"系统/设置"这类机制词。`
+      : undefined;
   const systemPrompt =
     overridePrompt ??
-    (await turnTrace.measure('promptAssemblyMs', () => assemblePrompt({ memoriesAsData: contextBundle })));
+    (await turnTrace.measure('promptAssemblyMs', () =>
+      assemblePrompt({ memoriesAsData: contextBundle, personaExtra: tenant?.personaExtra }),
+    ));
 
   // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
@@ -197,7 +208,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
 
   // —— 声纹对话式注册（批次2）：意图命中 / 录音进行中 → server 直出话术，跳过 LLM 与记忆写入。
   //    Prefill interim 也会进这里：startEnroll 幂等（final 名字覆盖 interim），话术只播 final 版。
-  const enrollCanned = resolveEnrollCanned(sessionId, userText);
+  const enrollCanned = resolveEnrollCanned(sessionId, userText, tenant?.id);
   if (enrollCanned) {
     console.log(`[custom-llm] enroll session=${sessionId ?? '-'} canned="${enrollCanned.slice(0, 24)}…"`);
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: enrollCanned });
@@ -320,13 +331,14 @@ export { customLlmRoute };
  * 4) recording 中：极简倾听哼声（避免 TTS 长回复污染录音）。
  * 带名意图检测最先：任何阶段直接说「我是B记住我」都能换名重来。
  */
-function resolveEnrollCanned(roomId: string | undefined, userText: string): string | null {
+function resolveEnrollCanned(roomId: string | undefined, userText: string, tenantId: string | undefined): string | null {
   if (!roomId || !userText.trim()) return null;
+  if (!tenantId) return null; // 无租户上下文（老房间/调试直连）不进注册流程
   const session = getEnroll(roomId);
 
   const beginNamed = (displayName: string): string => {
-    const sameName = findByDisplayName(displayName);
-    const existing = listActiveVoiceprints();
+    const sameName = findByDisplayName(tenantId, displayName);
+    const existing = listActiveVoiceprints(tenantId);
     if (!sameName && existing.length >= MAX_ACTIVE_VOICEPRINTS) {
       clearEnroll(roomId);
       return enrollFullLine(existing.map((r) => r.displayName));
@@ -351,7 +363,7 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string): stri
   }
 
   if (intent?.kind === 'unnamed') {
-    const existing = listActiveVoiceprints();
+    const existing = listActiveVoiceprints(tenantId);
     if (existing.length >= MAX_ACTIVE_VOICEPRINTS) {
       return enrollFullLine(existing.map((r) => r.displayName));
     }

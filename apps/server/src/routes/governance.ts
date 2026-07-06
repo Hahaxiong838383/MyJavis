@@ -1,9 +1,30 @@
 import { Hono } from 'hono';
 import { memory } from '../memory/index.js';
+import { tenantOwnsOwner } from '../voiceprint/registry.js';
+import type { AppEnv } from '../tenant/context.js';
 import type { GovernanceResult } from '../memory/types.js';
 import type { Context } from 'hono';
 
-const governanceRoute = new Hono();
+const governanceRoute = new Hono<AppEnv>();
+
+// 租户归属校验（批次A）：非 admin 只能治理自己租户声纹派生的 owner（记忆是隐私，红线）。
+// reassign 的 targetOwnerId 同校验，防跨租户转移。Hono req.json() 有 bodyCache，端点可重复读。
+governanceRoute.use('*', async (c, next) => {
+  if (c.get('isAdmin')) {
+    await next();
+    return;
+  }
+  const tenant = c.get('tenant');
+  if (!tenant) return c.json({ ok: false, error: 'unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => null)) as { ownerId?: string; targetOwnerId?: string } | null;
+  const owners = [c.req.query('owner')?.trim(), body?.ownerId?.trim(), body?.targetOwnerId?.trim()].filter(
+    (v): v is string => Boolean(v),
+  );
+  if (owners.length === 0 || owners.some((o) => !tenantOwnsOwner(tenant.id, o))) {
+    return c.json({ ok: false, error: 'owner 不属于当前账号' }, 403);
+  }
+  await next();
+});
 
 governanceRoute.get('/', async (c) => {
   const ownerId = requiredQuery(c.req.query('owner'));

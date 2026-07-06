@@ -17,6 +17,9 @@ import { rtcRoute } from './routes/rtc.js';
 import { customLlmRoute } from './routes/custom-llm.js';
 import { governanceRoute } from './routes/governance.js';
 import { voiceprintRoute } from './routes/voiceprint.js';
+import { tenantRoute, meRoute } from './routes/tenant.js';
+import { findTenantByToken } from './tenant/registry.js';
+import type { AppEnv } from './tenant/context.js';
 import { musicRoute } from './routes/music.js';
 
 // 版本真源 package.json（dist 运行时向上一级找；与 App 版本同步 bump）
@@ -31,18 +34,27 @@ const VERSION = ((): string => {
   return 'unknown';
 })();
 
-const app = new Hono();
+const app = new Hono<AppEnv>();
 const port = Number(process.env.PORT ?? 3001);
 
 // CORS 放开 origin（Tauri tauri://localhost / 本地 dev 各端都要来）；CORS 不是安全边界，真防线是下方 key。
 app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'X-Javis-Key', 'Authorization'] }));
 
-// /api/* 鉴权：JAVIS_API_KEY 设了才校验（本地 dev 不设不拦）；/v1 有自己的 CUSTOM_LLM_API_KEY 门。
+// /api/* 鉴权（多租户，批次A）：X-Javis-Key = 租户邀请码 → 绑定租户；= JAVIS_API_KEY → admin。
+// JAVIS_API_KEY 未设时（本地 dev）不拦且视为 admin。/v1 有自己的 CUSTOM_LLM_API_KEY 门。
 app.use('/api/*', async (c, next) => {
-  const required = process.env.JAVIS_API_KEY;
-  if (required && c.req.header('x-javis-key') !== required) {
-    return c.json({ ok: false, error: 'unauthorized' }, 401);
+  const key = c.req.header('x-javis-key') ?? '';
+  const adminKey = process.env.JAVIS_API_KEY;
+  if (!adminKey || key === adminKey) {
+    c.set('tenant', null);
+    c.set('isAdmin', true);
+    await next();
+    return;
   }
+  const tenant = key ? findTenantByToken(key) : undefined;
+  if (!tenant) return c.json({ ok: false, error: 'unauthorized' }, 401);
+  c.set('tenant', tenant);
+  c.set('isAdmin', false);
   await next();
 });
 
@@ -50,6 +62,8 @@ app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server', vers
 app.route('/api/rtc', rtcRoute);
 app.route('/api/governance', governanceRoute);
 app.route('/api/voiceprint', voiceprintRoute);
+app.route('/api/tenant', tenantRoute); // admin only（租户 CRUD/发码）
+app.route('/api/me', meRoute); // 租户自查/自配（激活校验+persona/称呼）
 app.route('/api/music', musicRoute);
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);

@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { setPromptOverride, clearPromptOverride } from '../rtc-prompt-override.js';
 import { callRtcOpenAPI } from '../providers/volc-openapi.js';
 import { listActiveVoiceprints } from '../voiceprint/registry.js';
+import { effectiveTenant, type AppEnv } from '../tenant/context.js';
 
 const require = createRequire(import.meta.url);
 // 火山 RTC token 私有格式（二进制 HMAC），原样复用火山官方 token.cjs（不移植避免 bug）。
@@ -24,7 +25,7 @@ const { AccessToken, privileges } = require('../rtc-token.cjs') as {
   privileges: { PrivPublishStream: number; PrivSubscribeStream: number };
 };
 
-const rtcRoute = new Hono();
+const rtcRoute = new Hono<AppEnv>();
 // 火山 CustomLLM 回调地址：必须公网 HTTPS（火山云回调我方大脑端点）。本地验证可设隧道地址。
 const CUSTOM_LLM_URL = process.env.CUSTOM_LLM_URL || 'https://example.com/v1/chat/completions';
 const WELCOME = process.env.RTC_WELCOME_MESSAGE || '你好，我在听，有什么可以帮你的？';
@@ -41,10 +42,11 @@ const LLM_PREFILL = (process.env.LLM_PREFILL ?? '0') === '1';
 // 打断后说话仍由 SilenceTime+AIVAD 正常判停。0=不发字段（回滚）。取值 0 或 [200,3000]。
 const INTERRUPT_SPEECH_MS = Number(process.env.INTERRUPT_SPEECH_MS ?? 800);
 
-/** 拼 custom-llm 回调 URL：?session=roomId（prompt override 键）+ 可选 ?user=（记忆注入键）。 */
-function buildCustomLlmUrl(roomId: string, userId?: string): string {
+/** 拼 custom-llm 回调 URL：?session=roomId + ?tenant=（租户上下文）+ 可选 ?user=（mock 调试键）。 */
+function buildCustomLlmUrl(roomId: string, tenantId?: string, userId?: string): string {
   const params = new URLSearchParams();
   params.set('session', roomId);
+  if (tenantId) params.set('tenant', tenantId);
   if (userId) params.set('user', userId);
   return `${CUSTOM_LLM_URL}?${params.toString()}`;
 }
@@ -53,6 +55,7 @@ type VoiceMode = 'identify' | 'denoise';
 
 interface VoiceChatOptions {
   memoryUser?: string;
+  tenantId?: string;
   voiceMode: VoiceMode;
   voiceprintIds: string[];
   voiceprintScore: number;
@@ -67,7 +70,7 @@ interface VoiceChatOptions {
  */
 const agentSessions = new Map<
   string,
-  { userId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number }
+  { userId: string; tenantId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number }
 >();
 
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
@@ -126,7 +129,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
       },
       LLMConfig: {
         Mode: 'CustomLLM',
-        Url: buildCustomLlmUrl(roomId, opts.memoryUser),
+        Url: buildCustomLlmUrl(roomId, opts.tenantId, opts.memoryUser),
         ModelName: 'myjavis',
         APIKey: process.env.CUSTOM_LLM_API_KEY || 'none',
         SystemMessages: [],
@@ -151,6 +154,8 @@ rtcRoute.post('/start', async (c) => {
   if (!process.env.VOLC_ACCESS_KEY_ID || !process.env.VOLC_SECRET_ACCESS_KEY) {
     return c.json({ ok: false, error: 'OpenAPI AK/SK 未配置（VOLC_ACCESS_KEY_ID/SECRET）' }, 500);
   }
+  const tenant = effectiveTenant(c);
+  if (!tenant) return c.json({ ok: false, error: '无租户上下文（邀请码无效或未激活）' }, 401);
 
   const roomId = `myjavis-${randomUUID()}`;
   const userId = `user-${randomUUID().slice(0, 8)}`;
@@ -168,14 +173,14 @@ rtcRoute.post('/start', async (c) => {
   }
   const memoryUser = startBody.userId?.trim() || undefined;
   const voiceMode: VoiceMode = startBody.voiceMode === 'denoise' ? 'denoise' : 'identify';
-  // 声纹 IdList 来源优先级：body 显式（调试）> env VOLC_VOICEPRINT_IDS（调试）> registry 自动（正常路径）
+  // 声纹 IdList 来源优先级：body 显式（调试）> env VOLC_VOICEPRINT_IDS（调试）> 本租户 registry（正常路径）
   const explicitIds =
     startBody.voiceprintIds?.filter((id) => id.trim()).map((id) => id.trim()) ??
     (process.env.VOLC_VOICEPRINT_IDS ?? '')
       .split(',')
       .map((id) => id.trim())
       .filter(Boolean);
-  const registryIds = explicitIds.length === 0 ? listActiveVoiceprints().map((r) => r.voiceprintId) : [];
+  const registryIds = explicitIds.length === 0 ? listActiveVoiceprints(tenant.id).map((r) => r.voiceprintId) : [];
   const voiceprintIds = explicitIds.length > 0 ? explicitIds : registryIds;
   const voiceprintScore = Number.isFinite(startBody.voiceprintScore) ? Number(startBody.voiceprintScore) : 50;
 
@@ -189,7 +194,7 @@ rtcRoute.post('/start', async (c) => {
   // 起 AI agent（火山起 task，AI 回调我方 /v1 大脑）
   const result = await callRtcOpenAPI(
     'StartVoiceChat',
-    buildVoiceChatConfig(roomId, userId, { memoryUser, voiceMode, voiceprintIds, voiceprintScore }),
+    buildVoiceChatConfig(roomId, userId, { memoryUser, tenantId: tenant.id, voiceMode, voiceprintIds, voiceprintScore }),
   );
   const err = result?.ResponseMetadata?.Error;
   if (err) {
@@ -198,7 +203,7 @@ rtcRoute.post('/start', async (c) => {
   }
 
   console.log(`[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length}`);
-  agentSessions.set(roomId, { userId, memoryUser, voiceMode, voiceprintScore });
+  agentSessions.set(roomId, { userId, tenantId: tenant.id, memoryUser, voiceMode, voiceprintScore });
   return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
 });
 
@@ -235,11 +240,12 @@ rtcRoute.post('/resume-agent', async (c) => {
   if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
   const sess = agentSessions.get(roomId);
   if (!sess) return c.json({ ok: false, error: 'unknown room（server 可能重启过，请重新开始对话）' }, 404);
-  const voiceprintIds = listActiveVoiceprints().map((r) => r.voiceprintId);
+  const voiceprintIds = listActiveVoiceprints(sess.tenantId).map((r) => r.voiceprintId);
   const result = await callRtcOpenAPI(
     'StartVoiceChat',
     buildVoiceChatConfig(roomId, sess.userId, {
       memoryUser: sess.memoryUser,
+      tenantId: sess.tenantId,
       voiceMode: sess.voiceMode,
       voiceprintIds,
       voiceprintScore: sess.voiceprintScore,
