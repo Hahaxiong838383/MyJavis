@@ -26,10 +26,15 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
-  // 激活门（批次B）：无鉴权 key（分发版首启）→ 邀请码激活页；dev 带 VITE key 直进主界面
+  // 激活门（批次B）：无鉴权 key（分发版首启）→ 邀请码激活页；dev 带 VITE key 直进主界面。
+  // UpdateBanner 在门外（顶层）：未激活的用户也要能收到更新。
   const [activated, setActivated] = useState(() => Boolean(currentApiKey()));
-  if (!activated) return <ActivationGate onActivated={() => setActivated(true)} />;
-  return <MainApp />;
+  return (
+    <>
+      <UpdateBanner />
+      {activated ? <MainApp /> : <ActivationGate onActivated={() => setActivated(true)} />}
+    </>
+  );
 }
 
 function MainApp() {
@@ -53,7 +58,6 @@ function MainApp() {
 
   return (
     <div style={styles.page}>
-      <UpdateBanner />
       <div
         style={{ ...styles.orbZone, cursor: guardState === 'guarded' ? 'pointer' : 'default' }}
         onClick={() => {
