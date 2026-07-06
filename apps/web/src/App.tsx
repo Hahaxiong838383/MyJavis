@@ -1,11 +1,16 @@
+import { useState } from 'react';
 import { useVoiceRtc } from './useVoiceRtc';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
 import { useAppStore } from './store';
+import { currentApiKey } from './api';
 import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
 import { VoiceprintPanel } from './components/VoiceprintPanel';
 import { MusicPlayer } from './components/MusicPlayer';
+import { ActivationGate } from './components/ActivationGate';
+import { SettingsPanel } from './components/SettingsPanel';
+import { UpdateBanner } from './components/UpdateBanner';
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '未连接',
@@ -21,6 +26,13 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
+  // 激活门（批次B）：无鉴权 key（分发版首启）→ 邀请码激活页；dev 带 VITE key 直进主界面
+  const [activated, setActivated] = useState(() => Boolean(currentApiKey()));
+  if (!activated) return <ActivationGate onActivated={() => setActivated(true)} />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted } =
     useVoiceRtc();
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
@@ -41,6 +53,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
+      <UpdateBanner />
       <div
         style={{ ...styles.orbZone, cursor: guardState === 'guarded' ? 'pointer' : 'default' }}
         onClick={() => {
@@ -105,6 +118,7 @@ export default function App() {
           </button>
         )}
 
+        <SettingsPanel />
         <VoiceprintPanel />
         <GovernancePanel />
         <MusicPlayer roomId={roomId} connected={connected} />
