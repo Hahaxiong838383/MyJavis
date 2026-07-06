@@ -66,14 +66,15 @@ export function SettingsPanel() {
       </div>
 
       <label style={styles.label}>
-        Javis 怎么称呼我（没认出声音时用）
+        Javis 平时怎么称呼我
         <input
           style={styles.input}
           value={userTitle}
           maxLength={16}
-          placeholder="比如：老板 / 川哥 / 小姐姐"
+          placeholder="比如：老板 / 瞅瞅 / 小姐姐"
           onChange={(e) => setUserTitle(e.target.value)}
         />
+        <span style={styles.hint}>注册过声纹的人被听出来时，优先用「声纹管理」里那个名字——想统一就把两处都改成一样的。</span>
       </label>
 
       <label style={styles.label}>
@@ -122,6 +123,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   label: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 14, fontSize: 13, color: '#cbd5e1' },
+  hint: { fontSize: 11, color: '#64748b' },
   input: {
     border: '1px solid rgba(148,163,184,.18)',
     borderRadius: 14,

@@ -182,7 +182,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
       `即使前面对话里你说过"不认识/认错了"，现在已确认，无需道歉解释，正常继续即可。` +
       `不要提"声纹/识别/系统/确认"这类机制词。`
     : tenant?.userTitle
-      ? `称呼提示：如需称呼对方且不确定对方是谁，用「${tenant.userTitle}」。不要提"系统/设置"这类机制词。`
+      ? `对方是这台设备的主人，日常请自然地称呼 TA「${tenant.userTitle}」（比如打招呼、确认、结尾时带上称呼，别每句都用）。不要提"系统/设置"这类机制词。`
       : undefined;
   const systemPrompt =
     overridePrompt ??
