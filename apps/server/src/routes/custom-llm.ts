@@ -36,9 +36,16 @@ import {
   startEnrollAwaitingName,
 } from '../voiceprint/enroll-session.js';
 import { detectMusicIntent } from '../music/music-intent.js';
-import { musicPlay } from '../music/orchestrator-client.js';
+import { musicPlay, musicPlayById } from '../music/orchestrator-client.js';
 import { setPending } from '../music/pending-store.js';
-import { getMusicSession, recordPlay } from '../music/music-session.js';
+import {
+  clearAwaitingChoice,
+  getAwaitingChoice,
+  getMusicSession,
+  recordPlay,
+  setAwaitingChoice,
+  type CandidateTrack,
+} from '../music/music-session.js';
 import { buildStreamUrl } from '../music/stream-url.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
@@ -386,7 +393,22 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string, tenan
  * 命中后直出话术 + 通过 pending-store 通知前端播放/控制。
  * 仅当 MUSIC_ORCHESTRATOR_URL 配置时启用，否则优雅返回 null。
  */
-/** playing 结果 → 设播放 pending + 记录（供"换一首"）+ 返回话术；非 playing 返回对应话术。 */
+/**
+ * B 站标题又臭又长——播报/反问时剪短。
+ * 优先级：query 本身出现在标题里 → 直接报 query（"夜曲"）；含 query 的《》段；截前 18 字。
+ * ⚠️ 不能盲取第一个《》：B 站标题尾部常挂专辑宣传（曾把《夜曲》MV 播报成"《最伟大的作品》"）。
+ */
+function shortTitle(title: string, query?: string): string {
+  const q = query?.trim();
+  if (q && q.length >= 2 && q.length <= 20 && title.includes(q)) return q;
+  if (q) {
+    const hit = [...title.matchAll(/《([^》]{1,24})》/g)].map((m) => m[1]!).find((b) => b.includes(q));
+    if (hit) return hit;
+  }
+  return title.length > 18 ? `${title.slice(0, 18)}…` : title;
+}
+
+/** playing 结果 → 设播放 pending + 记录（供"换一首"）+ 返回话术；ambiguous 存候选反问。 */
 function handlePlayResult(
   roomId: string,
   query: string,
@@ -395,8 +417,16 @@ function handlePlayResult(
 ): string {
   if (!playRes) return '音乐服务暂时连不上，稍后再试试？';
   if (playRes.status === 'ambiguous' && playRes.candidates && playRes.candidates.length > 0) {
-    const names = playRes.candidates.slice(0, 3).map((c) => `《${c.title}》`).join('、');
-    return `找到好几个，你是要${names}吗？`;
+    // 存候选（60s）——用户下一句"第一个/更具体的歌名"由 resolveChoiceReply 接住
+    const cands = playRes.candidates.slice(0, 3).map((c) => ({
+      id: c.id,
+      source: c.source,
+      title: c.title,
+      artist: c.artist,
+    }));
+    setAwaitingChoice(roomId, query, cands);
+    const names = cands.map((c, i) => `${i + 1}、${shortTitle(c.title)}`).join('；');
+    return `找到几个：${names}。要哪个？说得更具体点也行。`;
   }
   if (playRes.status === 'playing' && playRes.track) {
     const track = playRes.track;
@@ -405,14 +435,77 @@ function handlePlayResult(
       setPending(roomId, { action: 'play', streamUrl: fullUrl, title: track.title });
       recordPlay(roomId, query, track.id);
     }
-    return `${prefix}《${track.title}》`;
+    return `${prefix}《${shortTitle(track.title, query)}》`;
   }
   if (playRes.status === 'not_found') return '没找到这首诶，换个说法试试？';
   return '没找到诶，换个说法试试？';
 }
 
+const ORDINAL_MAP: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, '1': 1, '2': 2, '3': 3 };
+
+/** 解析"第一个/第2首/一/1"这类序号回答（1-based；解析不出返回 null）。导出供测试。 */
+export function parseOrdinal(text: string): number | null {
+  const m = /^(?:第|就|要)?\s*(?:第)?([一二两三123])\s*(?:个|首|条)?[吧呀啊哦呢嘛！!。.]*$/.exec(text.trim());
+  if (!m) return null;
+  return ORDINAL_MAP[m[1]!] ?? null;
+}
+
+/**
+ * ambiguous 反问后的回答衔接（2026-07-06 真机 bug 修复：反问"要哪个"后用户答
+ * "周杰伦的夜曲"曾无人接、掉进普通聊天）。优先级：
+ * 取消 > 序号选择 > 候选模糊匹配 > 短文本当补全 query 重搜 > 不像回答（交回常规链路）。
+ */
+async function resolveChoiceReply(
+  roomId: string,
+  userText: string,
+  candidates: CandidateTrack[],
+): Promise<string | null> {
+  const t = userText.trim();
+  if (/(算了|不用了|不要了|取消|不听了|都不是|都不要)/.test(t)) {
+    clearAwaitingChoice(roomId);
+    return '好，那先不放了。';
+  }
+  const ord = parseOrdinal(t);
+  if (ord !== null && ord >= 1 && ord <= candidates.length) {
+    const c = candidates[ord - 1]!;
+    clearAwaitingChoice(roomId);
+    const res = await musicPlayById(c, roomId);
+    return handlePlayResult(roomId, c.title, res, '好，给你放');
+  }
+  // 候选内容匹配：用户念了候选里的歌名/歌手片段（去语气词后按字符包含判断）
+  const norm = t.replace(/[吧呀啊哦呢嘛的了！!。.，,\s]/g, '');
+  if (norm.length >= 2) {
+    const hit = candidates.find((c) => {
+      const hay = `${c.title}${c.artist ?? ''}`.replace(/\s/g, '');
+      return hay.includes(norm) || (norm.length >= 4 && norm.includes((c.artist ?? '').replace(/\s/g, '')) && !!c.artist);
+    });
+    if (hit) {
+      clearAwaitingChoice(roomId);
+      const res = await musicPlayById(hit, roomId);
+      return handlePlayResult(roomId, hit.title, res, '好，给你放');
+    }
+  }
+  // 短文本 = 用户在补全信息（"周杰伦的夜曲"）→ 当新 query 重搜（子串信号已增强，命中率高）
+  if (t.length <= 20) {
+    clearAwaitingChoice(roomId);
+    const query = t.replace(/[吧呀啊哦呢嘛！!。.，,?？]+$/u, '').trim();
+    const res = await musicPlay(query, roomId);
+    return handlePlayResult(roomId, query, res, '好，给你放');
+  }
+  return null; // 长文本/明显换话题 → 调用方清态后走常规链路
+}
+
 async function resolveMusicCanned(roomId: string | undefined, userText: string): Promise<string | null> {
   if (!roomId || !userText.trim() || !config.music.enabled) return null;
+
+  // 候选等待态优先（反问后的第一优先衔接；resolveChoiceReply 返回 null = 不像在选歌）
+  const pendingChoice = getAwaitingChoice(roomId);
+  if (pendingChoice) {
+    const reply = await resolveChoiceReply(roomId, userText, pendingChoice);
+    if (reply !== null) return reply;
+    clearAwaitingChoice(roomId); // 用户换话题了：清态走常规
+  }
+
   const intent = detectMusicIntent(userText);
   if (!intent) return null;
 

@@ -120,6 +120,21 @@ export async function musicPlay(
   });
 }
 
+/** 直接按曲目 id 播（ambiguous 反问后用户选中某候选）：orchestrator 跳过搜索直接签名。 */
+export async function musicPlayById(
+  track: { id: string; source: string; title?: string },
+  sessionId: string,
+): Promise<MusicPlayResult | null> {
+  return postJson<MusicPlayResult>('/tools/music_play', {
+    query: track.title ?? track.id,
+    mode: 'track',
+    session_id: sessionId,
+    track_id: track.id,
+    track_source: track.source,
+    track_title: track.title,
+  });
+}
+
 export async function musicControl(
   action: string,
   value: unknown,
