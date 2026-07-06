@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from './store';
 import { apiFetch } from './api';
+import { kwsStart, kwsStop, onKwsWake } from './kws-bridge';
 
 export type GuardState = 'idle' | 'guarded' | 'active';
 export type GuardMode = 'respond' | 'save';
@@ -184,6 +185,31 @@ export function useMusicGuard(args: {
       setGuardState('idle');
     }
   }, [connected, musicPlaying, guardState, voiceStatus, guardMode, muteUplink, unmuteUplink, setMusicDuck, clearFollowupTimer]);
+
+  // —— 贾维斯唤醒词（步 3，桌面壳 Rust KWS）：仅 guarded 态运行——惰性省 CPU，
+  //    且 active/idle 态（有 TTS）不跑 KWS = 天然免"助手自己说出唤醒词自触发"。
+  //    命中走 wake() 与点球 PTT 同一入口；wake 经 ref 桥接（effect 只依赖 guardState，
+  //    学 v0.6.0 轮询拆建教训）。浏览器环境 kws-bridge 全部 no-op（只能点球）。
+  const wakeRef = useRef(wake);
+  wakeRef.current = wake;
+  useEffect(() => {
+    if (guardState !== 'guarded') return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void kwsStart();
+    void onKwsWake((keyword) => {
+      console.log(`[guard] kws-wake "${keyword}"`);
+      wakeRef.current();
+    }).then((u) => {
+      if (disposed) u?.();
+      else unlisten = u;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void kwsStop();
+    };
+  }, [guardState]);
 
   // active 态的追问窗口：bot 说完（listening）起 8s 计时，任何新对话活动重置；超时回 guarded
   useEffect(() => {
