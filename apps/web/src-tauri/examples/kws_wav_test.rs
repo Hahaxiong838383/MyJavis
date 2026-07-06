@@ -28,6 +28,10 @@ fn main() {
     config.model_config.provider = Some("cpu".into());
     config.model_config.num_threads = 1;
     config.keywords_file = Some(p("keywords.txt"));
+    // 与生产 kws.rs 同款灵敏度参数（音乐外放低 SNR 场景）——测试配置必须与生产一致；
+    // env 可覆盖（KWS_SCORE/KWS_THRESHOLD）用于调参 A/B 对照实验
+    config.keywords_score = std::env::var("KWS_SCORE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    config.keywords_threshold = std::env::var("KWS_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15);
 
     let kws = KeywordSpotter::create(&config).expect("KeywordSpotter 创建失败");
     let wave = Wave::read(wav_path).expect("读 wav 失败");

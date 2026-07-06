@@ -7,8 +7,8 @@
 
 import { Hono } from 'hono';
 import { takePending } from '../music/pending-store.js';
-import { getMusicSession, recordPlay } from '../music/music-session.js';
-import { musicPlay } from '../music/orchestrator-client.js';
+import { getMusicSession, recordPlay, takePrevTrack } from '../music/music-session.js';
+import { musicPlay, musicPlayById } from '../music/orchestrator-client.js';
 import { buildStreamUrl } from '../music/stream-url.js';
 
 const musicRoute = new Hono();
@@ -37,8 +37,29 @@ musicRoute.post('/next', async (c) => {
     const track = playRes.track;
     const fullUrl = buildStreamUrl(playRes.stream_url || track.stream_url || '');
     if (fullUrl) {
-      recordPlay(roomId, ms.lastQuery, track.id);
+      recordPlay(roomId, ms.lastQuery, { id: track.id, source: track.source, title: track.title, artist: track.artist });
       console.log(`[music] next room=${roomId} → "${track.title.slice(0, 30)}"`);
+      return c.json({ ok: true, command: { action: 'play', streamUrl: fullUrl, title: track.title } });
+    }
+  }
+  return c.json({ ok: false, error: playRes?.status ?? 'unavailable' }, 502);
+});
+
+/** 上一首：从播放历史栈回溯（⏮ 按钮 / KWS"上一首"直调，同步返回不走轮询）。 */
+musicRoute.post('/prev', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { roomId?: string };
+  const roomId = body.roomId?.trim();
+  if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
+  const prev = takePrevTrack(roomId);
+  if (!prev) return c.json({ ok: false, error: 'no_prev' }, 404);
+  const playRes = await musicPlayById(prev, roomId);
+  if (playRes?.status === 'playing' && playRes.track) {
+    const track = playRes.track;
+    const fullUrl = buildStreamUrl(playRes.stream_url || track.stream_url || '');
+    if (fullUrl) {
+      const ms = getMusicSession(roomId);
+      recordPlay(roomId, ms?.lastQuery || track.title, { id: track.id, source: track.source, title: track.title, artist: track.artist });
+      console.log(`[music] prev room=${roomId} → "${track.title.slice(0, 30)}"`);
       return c.json({ ok: true, command: { action: 'play', streamUrl: fullUrl, title: track.title } });
     }
   }

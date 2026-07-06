@@ -47,9 +47,9 @@ function MainApp() {
   const userSubtitle = useAppStore((s) => s.userSubtitle);
   const speakerName = useAppStore((s) => s.speakerName);
 
-  // 守护态标签按 KWS 可用性区分：桌面 App KWS 正常=喊贾维斯；异常/浏览器=点球兜底
+  // 守护态标签按 KWS 可用性区分：桌面 App KWS 正常=喊贾维斯/直接说控制词；异常/浏览器=点球兜底
   const guardedLabel =
-    kwsStatus === 'active' ? '听歌中 · 喊"贾维斯贾维斯"或点我唤醒' : '听歌中 · 点我唤醒 Javis';
+    kwsStatus === 'active' ? '听歌中 · 喊"贾维斯贾维斯"唤醒，说"下一首"换歌' : '听歌中 · 点我唤醒 Javis';
   const orbLabel = connecting
     ? PHASE_LABEL[connectPhase] ?? '连接中…'
     : waking
@@ -68,6 +68,9 @@ function MainApp() {
       >
         <PulseOrb phase={voiceStatus} label={orbLabel} getAudioTrack={getAudioTrack} />
       </div>
+
+      {/* 播放条紧贴脉冲球下方、无边框融背景（2026-07-06 川哥拍板）；audio 元素也在组件内 */}
+      <MusicPlayer roomId={roomId} connected={connected} />
 
       <main style={styles.main}>
         {enroll && (enroll.state === 'recording' || enroll.state === 'uploading') && (
@@ -127,7 +130,6 @@ function MainApp() {
         <SettingsPanel />
         <VoiceprintPanel />
         <GovernancePanel />
-        <MusicPlayer roomId={roomId} connected={connected} />
       </main>
 
       <footer style={styles.footer}>

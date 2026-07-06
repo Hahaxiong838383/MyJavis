@@ -1,3 +1,9 @@
 h āi j iǎ w éi s ī @嗨贾维斯
 n ǐ h ǎo j iǎ w éi s ī @你好贾维斯
 j iǎ w éi s ī j iǎ w éi s ī @贾维斯贾维斯
+j iǎ w éi s ī #0.18 @贾维斯
+x ià y ī sh ǒu #0.18 @下一首
+sh àng y ī sh ǒu #0.18 @上一首
+h uàn y ī sh ǒu #0.18 @换一首
+z àn t íng b ō f àng #0.18 @暂停播放
+t íng zh ǐ b ō f àng #0.18 @停止播放

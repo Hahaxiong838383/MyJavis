@@ -124,12 +124,12 @@ export function MusicPlayer({ roomId, connected }: { roomId: string | null; conn
   const stopPlaybackRef = useRef(stopPlayback);
   stopPlaybackRef.current = stopPlayback;
 
-  /** 换一首（按钮直调 server 换歌逻辑：上次查询 + 排除已放，同步返回不等轮询）。 */
-  async function nextTrack() {
+  /** 换歌/回上一首共用：按钮与 KWS 控制词直调 server，同步返回新歌不等轮询。 */
+  async function switchTrack(endpoint: '/api/music/next' | '/api/music/prev') {
     if (!roomId || switching) return;
     setSwitching(true);
     try {
-      const res = await apiFetch('/api/music/next', {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId }),
@@ -138,14 +138,34 @@ export function MusicPlayer({ roomId, connected }: { roomId: string | null; conn
       if (d.ok && d.command) {
         handleCommand(d.command);
       } else {
-        console.log('[music] next failed:', d.error);
+        console.log(`[music] ${endpoint} failed:`, d.error);
       }
     } catch (e) {
-      console.log('[music] next error:', (e as Error)?.message);
+      console.log(`[music] ${endpoint} error:`, (e as Error)?.message);
     } finally {
       setSwitching(false);
     }
   }
+  const nextTrack = () => switchTrack('/api/music/next');
+  const prevTrack = () => switchTrack('/api/music/prev');
+
+  /** KWS 本地控制词（useMusicGuard 分流投递）：守护态 mic 对火山静音，控制不经语音链路。 */
+  function handleLocalControl(action: string) {
+    const audio = audioRef.current;
+    console.log(`[music] local-control ${action}`);
+    if (action === 'next') void nextTrack();
+    else if (action === 'prev') void prevTrack();
+    else if (action === 'pause') audio?.pause();
+    else if (action === 'stop') stopPlayback();
+  }
+  const handleLocalControlRef = useRef(handleLocalControl);
+  handleLocalControlRef.current = handleLocalControl;
+  useEffect(() => {
+    const h = (e: Event) =>
+      handleLocalControlRef.current((e as CustomEvent<{ action?: string }>).detail?.action ?? '');
+    window.addEventListener('music-local-control', h);
+    return () => window.removeEventListener('music-local-control', h);
+  }, []);
 
   // audio 原生事件 → store（guard 的唯一事实源）。挂载一次，title 走 ref 不过期。
   useEffect(() => {
@@ -215,27 +235,32 @@ export function MusicPlayer({ roomId, connected }: { roomId: string | null; conn
   return (
     <>
       {track && (
-        <div style={styles.bar}>
-          <span style={styles.note}>♪</span>
-          <span style={styles.title} title={track.title}>
-            {track.title}
-          </span>
-          <button
-            style={styles.ctl}
-            onClick={() => {
-              if (!audio) return;
-              if (paused) void audio.play().catch(() => {});
-              else audio.pause();
-            }}
-          >
-            {paused ? '▶' : '⏸'}
-          </button>
-          <button style={styles.ctl} disabled={switching} onClick={() => void nextTrack()}>
-            {switching ? '…' : '⏭'}
-          </button>
-          <button style={styles.ctl} onClick={stopPlayback}>
-            ⏹
-          </button>
+        <div style={styles.wrap}>
+          <div style={styles.bar}>
+            <span style={styles.note}>♪</span>
+            <span style={styles.title} title={track.title}>
+              {track.title}
+            </span>
+            <button style={styles.ctl} disabled={switching} onClick={() => void prevTrack()} title="上一首">
+              ⏮
+            </button>
+            <button
+              style={styles.ctl}
+              onClick={() => {
+                if (!audio) return;
+                if (paused) void audio.play().catch(() => {});
+                else audio.pause();
+              }}
+            >
+              {paused ? '▶' : '⏸'}
+            </button>
+            <button style={styles.ctl} disabled={switching} onClick={() => void nextTrack()} title="下一首">
+              {switching ? '…' : '⏭'}
+            </button>
+            <button style={styles.ctl} onClick={stopPlayback} title="停止">
+              ⏹
+            </button>
+          </div>
         </div>
       )}
       <audio ref={audioRef} style={{ display: 'none' }} />
@@ -243,35 +268,35 @@ export function MusicPlayer({ roomId, connected }: { roomId: string | null; conn
   );
 }
 
+// 播放条与 #04060c 背景融合（川哥 2026-07-06 拍板）：无边框无底色胶囊，
+// 紧贴脉冲球下方（位置由 App.tsx 决定），只留歌名 + 控制按钮的淡色浮层感。
 const styles: Record<string, React.CSSProperties> = {
+  wrap: { display: 'flex', justifyContent: 'center', width: '100%' },
   bar: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    padding: '8px 14px',
-    borderRadius: 999,
-    background: 'rgba(59,130,246,0.10)',
-    border: '1px solid rgba(59,130,246,0.30)',
-    color: '#93c5fd',
+    padding: '2px 12px',
+    color: '#8b96b3',
     fontSize: 13,
-    maxWidth: 480,
+    maxWidth: 520,
   },
-  note: { fontSize: 15 },
+  note: { fontSize: 15, color: '#93c5fd' },
   title: {
-    maxWidth: 240,
+    maxWidth: 260,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   ctl: {
     border: 'none',
-    background: 'rgba(59,130,246,0.18)',
-    color: '#bfdbfe',
+    background: 'transparent',
+    color: '#aab6d4',
     borderRadius: 999,
-    width: 30,
-    height: 30,
+    width: 32,
+    height: 32,
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     lineHeight: 1,
   },
 };

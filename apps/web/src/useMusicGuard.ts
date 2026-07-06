@@ -57,6 +57,41 @@ function playChime(): void {
 
 export type KwsStatus = 'unavailable' | 'active' | 'error';
 
+/**
+ * KWS 本地控制词 → 播放器动作（智能音箱"免唤醒指令"范式）：听歌守护态 mic 对火山
+ * 是静音的，说"下一首"火山根本听不到——控制词由本地 KWS 识别、本地直接执行，
+ * 不唤醒 Javis 不打断音乐。经 CustomEvent 送 MusicPlayer（组件间零耦合）。
+ */
+const KWS_CONTROL_MAP: Record<string, string> = {
+  下一首: 'next',
+  换一首: 'next',
+  上一首: 'prev',
+  暂停播放: 'pause',
+  停止播放: 'stop',
+};
+
+/** 控制词确认音：单短音（与唤醒 chime 区分——不进入对话，只"叮"一声表示听到了）。 */
+function playTick(): void {
+  try {
+    const AC = window.AudioContext ?? (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 1046;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.16);
+    setTimeout(() => void ctx.close(), 400);
+  } catch {
+    /* 确认音失败不阻塞控制 */
+  }
+}
+
 export function useMusicGuard(args: {
   connected: boolean;
   roomId: string | null;
@@ -201,6 +236,14 @@ export function useMusicGuard(args: {
     const unlistens: Array<() => void> = [];
     void kwsStart();
     void onKwsWake((keyword) => {
+      // 分流：控制词 → 本地播放器直控（不唤醒、不打断音乐）；唤醒词 → wake()
+      const control = KWS_CONTROL_MAP[keyword];
+      if (control) {
+        console.log(`[guard] kws-control "${keyword}" → ${control}`);
+        playTick();
+        window.dispatchEvent(new CustomEvent('music-local-control', { detail: { action: control } }));
+        return;
+      }
       console.log(`[guard] kws-wake "${keyword}"`);
       wakeRef.current();
     }).then((u) => {

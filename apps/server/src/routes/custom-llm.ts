@@ -44,6 +44,7 @@ import {
   getMusicSession,
   recordPlay,
   setAwaitingChoice,
+  takePrevTrack,
   type CandidateTrack,
 } from '../music/music-session.js';
 import { buildStreamUrl } from '../music/stream-url.js';
@@ -416,7 +417,7 @@ function shortTitle(title: string, query?: string): string {
  * 800ms 延迟被"好，给你放"的 TTS 播报完全掩盖，体感无感。
  */
 const playCommitTimers = new Map<string, ReturnType<typeof setTimeout>>();
-function schedulePlayCommit(roomId: string, cmd: { streamUrl: string; title: string }, query: string, trackId: string): void {
+function schedulePlayCommit(roomId: string, cmd: { streamUrl: string; title: string }, query: string, track: CandidateTrack): void {
   const old = playCommitTimers.get(roomId);
   if (old) clearTimeout(old);
   playCommitTimers.set(
@@ -424,7 +425,7 @@ function schedulePlayCommit(roomId: string, cmd: { streamUrl: string; title: str
     setTimeout(() => {
       playCommitTimers.delete(roomId);
       setPending(roomId, { action: 'play', streamUrl: cmd.streamUrl, title: cmd.title });
-      recordPlay(roomId, query, trackId);
+      recordPlay(roomId, query, track);
       console.log(`[music] play committed room=${roomId} "${cmd.title.slice(0, 24)}"`);
     }, 800),
   );
@@ -454,9 +455,18 @@ function handlePlayResult(
     const track = playRes.track;
     const fullUrl = buildStreamUrl(playRes.stream_url || track.stream_url || '');
     if (fullUrl) {
-      schedulePlayCommit(roomId, { streamUrl: fullUrl, title: track.title }, query, track.id);
+      schedulePlayCommit(
+        roomId,
+        { streamUrl: fullUrl, title: track.title },
+        query,
+        { id: track.id, source: track.source, title: track.title, artist: track.artist },
+      );
     }
-    return `${prefix}《${shortTitle(track.title, query)}》`;
+    // 播报保险：shortTitle 剪不短（>12 字）= query 未命中标题 = 十有八九是 interim 截断
+    // query 搜出的无关结果（真机曾念出"《【扒】喷火的爹，舌头肿了两周…》"）——不念标题，
+    // 歌名交给播放条 UI 显示；剪得短的（query 命中）照常念，保留确认感。
+    const st = shortTitle(track.title, query);
+    return st.length > 12 ? `${prefix}～` : `${prefix}《${st}》`;
   }
   if (playRes.status === 'not_found') return '没找到这首诶，换个说法试试？';
   return '没找到诶，换个说法试试？';
@@ -516,8 +526,18 @@ async function resolveChoiceReply(
   return null; // 长文本/明显换话题 → 调用方清态后走常规链路
 }
 
+/** 纯唤醒词文本（"贾维斯/贾维斯贾维斯/你好，贾维斯"）——active 态用户喊唤醒词测试时，
+ *  不能让 LLM 当闲聊接（曾回"嗯嗯。哦。"迷惑用户）；秒回"我在"给确定感。
+ *  去掉标点后整句只剩唤醒词组合才拦，带指令的（"贾维斯放首歌"）不受影响。 */
+function isPureWakeWord(text: string): boolean {
+  const norm = text.replace(/[^一-龥a-zA-Z]/g, '').toLowerCase();
+  return /^(?:嗨|哈喽|哈啰|hi|hey|你好)?贾维斯(?:你好)?(?:贾维斯)?$/.test(norm) && norm.includes('贾维斯');
+}
+
 async function resolveMusicCanned(roomId: string | undefined, userText: string): Promise<string | null> {
   if (!roomId || !userText.trim() || !config.music.enabled) return null;
+
+  if (isPureWakeWord(userText)) return '我在，你说～';
 
   // 候选等待态优先（反问后的第一优先衔接；resolveChoiceReply 返回 null = 不像在选歌）
   const pendingChoice = getAwaitingChoice(roomId);
@@ -560,12 +580,19 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
       }
       return '现在还没在放歌呢，想听什么跟我说～';
     }
-    // 其余控制（暂停/继续/上一首/音量）走前端 <audio> 控制
+    // "上一首"：从播放历史栈真回上一曲（2026-07-06 前是"回本曲开头"的 stub，川哥点名要真的）
+    if (intent.action === 'prev') {
+      const prev = takePrevTrack(roomId);
+      if (!prev) return '前面没有别的歌啦，这就是第一首～';
+      const ms = getMusicSession(roomId);
+      const playRes = await musicPlayById(prev, roomId);
+      return handlePlayResult(roomId, ms?.lastQuery || prev.title, playRes, '回上一首，放');
+    }
+    // 其余控制（暂停/继续/音量）走前端 <audio> 控制
     setPending(roomId, { action: 'control', control: intent.action });
     const acks: Record<string, string> = {
       pause: '好嘞，暂停。',
       resume: '继续播～',
-      prev: '上一首。',
       louder: '调大声点。',
       quieter: '小声点。',
     };
