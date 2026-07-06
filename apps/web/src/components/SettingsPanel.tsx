@@ -57,7 +57,7 @@ export function SettingsPanel() {
     <section style={styles.panel}>
       <div style={styles.header}>
         <div>
-          <h2 style={styles.title}>我的设置{name ? ` · ${name}` : ''}</h2>
+          <h2 style={styles.title}>我的设置{userTitle || name ? ` · ${userTitle || name}` : ''}</h2>
           <p style={styles.help}>人设与称呼存在云端，跟着邀请码走；安全与语音输出规范不可更改。</p>
         </div>
         <button style={styles.smallButton} disabled={loading} onClick={() => void save()}>

@@ -156,6 +156,8 @@ rtcRoute.post('/start', async (c) => {
   }
   const tenant = effectiveTenant(c);
   if (!tenant) return c.json({ ok: false, error: '无租户上下文（邀请码无效或未激活）' }, 401);
+  // 开场白租户化：设置了称呼就用称呼打招呼（曾是 env 硬编码"你好川哥"——多租户后按人拼）
+  const welcome = tenant.userTitle?.trim() ? `你好${tenant.userTitle.trim()}，我是 Javis，随时吩咐。` : WELCOME;
 
   const roomId = `myjavis-${randomUUID()}`;
   const userId = `user-${randomUUID().slice(0, 8)}`;
@@ -194,7 +196,14 @@ rtcRoute.post('/start', async (c) => {
   // 起 AI agent（火山起 task，AI 回调我方 /v1 大脑）
   const result = await callRtcOpenAPI(
     'StartVoiceChat',
-    buildVoiceChatConfig(roomId, userId, { memoryUser, tenantId: tenant.id, voiceMode, voiceprintIds, voiceprintScore }),
+    buildVoiceChatConfig(roomId, userId, {
+      memoryUser,
+      tenantId: tenant.id,
+      voiceMode,
+      voiceprintIds,
+      voiceprintScore,
+      welcomeOverride: welcome,
+    }),
   );
   const err = result?.ResponseMetadata?.Error;
   if (err) {
@@ -202,7 +211,9 @@ rtcRoute.post('/start', async (c) => {
     return c.json({ ok: false, error: `${err.Code}: ${err.Message}` }, 502);
   }
 
-  console.log(`[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length}`);
+  console.log(
+    `[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length} welcome="${welcome.slice(0, 12)}…"`,
+  );
   agentSessions.set(roomId, { userId, tenantId: tenant.id, memoryUser, voiceMode, voiceprintScore });
   return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
 });
