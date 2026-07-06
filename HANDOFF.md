@@ -84,6 +84,8 @@
 10. task/reminder 层 + calendar 解析(现 placeholder)。
 11. 治理面板美化(功能 MVP 已通)。
 
+**📋 待川哥拍板 — LLM 第三路(2026-07-06 已调研)**:火山方舟 Coding Plan(`/api/coding/v3`,¥40/月套餐,约 API 直调 1/10 价)四模型 speakable TTFT 实测(生产机各3轮中位:doubao-lite 464ms / deepseek-v4-flash 1348ms / doubao-pro 1659ms / glm-5.2 2119ms;基准脚本 `scripts/bench-llm-latency.mjs`,key 从 env/baseUrl 从 argv 可复用)。pro 不降智但比现有 DeepSeek 直连还慢~600ms 已排除;deepseek-v4-flash 无增益;glm-5.2 语音不合格(已确认满血旗舰非阉割,慢因它最重:model字段+`glm-5.2[1m]`可调+反向速度梯度三证);唯一有速度价值=**doubao-lite**(464ms 砍现状一半,代价=降 lite 档)。**决策 A**=lite 挂 `LLM_FALLBACK_*` 进赛马(赛马制下几乎每轮赢≈主力降档 lite,一行 env 回滚) / **C**=维持现状(doubao 仅灾备第三路)。B(pro 进赛马)已排除。
+
 **P2 — 工程尾巴**:
 12. Tauri entitlements 真签名(开 App Sandbox/上架才需要;本地 TCC 够用)+ `time` crate 死 pin 升级 Tauri 时复查。
 
