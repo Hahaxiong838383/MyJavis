@@ -93,6 +93,10 @@ export interface ContextBundle {
   injectedMemoryIds: string[];
   usedProvisional: boolean;
   degradationReason?: string;
+  /** R1 相关性召回命中的 query 词（可解释性/telemetry）；走退化路径时缺省。 */
+  matchedKeywords?: string[];
+  /** 注入位里来自相关性召回的条数（其余为 recency 保底位）。 */
+  relevantCount?: number;
 }
 
 export interface RecallQuery {

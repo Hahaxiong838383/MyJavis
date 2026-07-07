@@ -20,6 +20,10 @@ export interface MemoryUseTrace {
   injectedMemoryIds: string[];
   degradationReasons: string[];
   usedProvisional: boolean;
+  /** R1 相关性召回命中的 query 词；缺省=本轮走了退化（最近高置信）路径。 */
+  matchedKeywords?: string[];
+  /** 注入位里来自相关性召回的条数。 */
+  relevantCount?: number;
 }
 
 export interface LatencyTrace {
@@ -87,11 +91,15 @@ export class TurnTrace {
     injectedMemoryIds?: string[];
     degradationReason?: string;
     usedProvisional?: boolean;
+    matchedKeywords?: string[];
+    relevantCount?: number;
   }): void {
     if (args.readMemoryIds) this.memoryUse.readMemoryIds.push(...args.readMemoryIds);
     if (args.injectedMemoryIds) this.memoryUse.injectedMemoryIds.push(...args.injectedMemoryIds);
     if (args.degradationReason) this.memoryUse.degradationReasons.push(args.degradationReason);
     if (args.usedProvisional) this.memoryUse.usedProvisional = true;
+    if (args.matchedKeywords?.length) this.memoryUse.matchedKeywords = args.matchedKeywords;
+    if (args.relevantCount !== undefined) this.memoryUse.relevantCount = args.relevantCount;
   }
 
   finish(): TurnTelemetry {

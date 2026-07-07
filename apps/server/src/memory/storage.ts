@@ -496,6 +496,23 @@ export class SQLiteMemoryStorage {
     return rows.map(rowToMemoryItem);
   }
 
+  /**
+   * R1 相关性召回候选集：同 hot 视图可见性（committed/provisional、未挂起、未过期），
+   * 排除 preference（该类由 pref_summary 层单独注入，不占相关位），cap 保护热路径。
+   */
+  listRecallCandidates(ownerId: string, cap = 2000): MemoryItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM hot_readable_memories
+         WHERE (owner_id = ? OR namespace IN ('shared:household'))
+           AND type != 'preference'
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(ownerId, cap) as unknown as MemoryRow[];
+    return rows.map(rowToMemoryItem);
+  }
+
   listMemoriesByStatus(status: MemoryStatus): MemoryItem[] {
     const rows = this.db.prepare(`SELECT * FROM memory_item WHERE status = ? ORDER BY created_at`).all(status) as unknown as MemoryRow[];
     return rows.map(rowToMemoryItem);

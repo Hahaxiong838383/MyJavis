@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SQLiteMemoryStorage } from './storage.js';
 import { EventLog } from '../session/event-log.js';
+import { mixRecall, warmupTokenizer, type RecallDoc } from '../memory-core/index.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
@@ -23,6 +24,22 @@ import type {
 export const storage = new SQLiteMemoryStorage();
 export const identity: IdentityProviderAdapter = new VolcIdentityProvider(storage);
 export const eventLog = new EventLog(storage);
+
+// jieba 词典预热（~5ms，一次性），避免摊在首轮通话的 recall 上
+warmupTokenizer();
+
+/** 相关性召回候选上限：几千条内打分毫秒级（单测哨兵 2000 条 <150ms），超出取最近。 */
+const RECALL_CANDIDATE_CAP = 2000;
+
+/** MemoryItem → 检索文档：索引文本 = 结构化 key/value + ASR 原话片段（原话是召回的富矿）。 */
+function toRecallDoc(item: MemoryItem): RecallDoc {
+  return {
+    id: item.id,
+    text: [item.content.key, item.content.value, item.sourceSpan].filter(Boolean).join(' '),
+    createdAt: item.createdAt,
+    confidenceWeight: item.status === 'provisional' ? 0.7 : 1.0,
+  };
+}
 
 export class MyJavisMemory implements Memory {
   constructor(
@@ -106,17 +123,41 @@ export class MyJavisMemory implements Memory {
       };
     }
 
+    const limit = q.limit ?? 8;
     const preferenceSummaries = this.db.listPrefSummaries(q.ownerId).map((summary) => prefSummaryToMemoryItem(summary));
-    const memories = [
-      ...preferenceSummaries,
-      ...this.db.listHotMemories(q.ownerId, q.limit ?? 8).filter((item) => item.type !== 'preference'),
-    ].slice(0, q.limit ?? 8);
+
+    // R1 相关性召回（docs/memory-architecture.md §5.2）：jieba 分词 + IDF-local 打分 +
+    // salience(×recency×confidence) 相关位 top-5 + recency 保底 3。
+    // 退化契约：query 无有效词 / 零命中 → picked=null → 完全走升级前"最近高置信"路径，
+    // 最坏情况严格等于旧行为。
+    let hot: MemoryItem[] | null = null;
+    let matchedKeywords: string[] | undefined;
+    let relevantCount: number | undefined;
+    if (q.query?.trim()) {
+      const candidates = this.db.listRecallCandidates(q.ownerId, RECALL_CANDIDATE_CAP);
+      if (candidates.length > 0) {
+        const byId = new Map(candidates.map((item) => [item.id, item]));
+        const mix = mixRecall(q.query, candidates.map(toRecallDoc), { relevantK: 5, recentK: 3, cap: limit });
+        if (mix.picked) {
+          hot = mix.picked.map((doc) => byId.get(doc.id)).filter((item): item is MemoryItem => Boolean(item));
+          matchedKeywords = mix.matchedKeywords;
+          relevantCount = mix.relevantCount;
+        }
+      }
+    }
+    if (!hot) {
+      hot = this.db.listHotMemories(q.ownerId, limit).filter((item) => item.type !== 'preference');
+    }
+
+    const memories = [...preferenceSummaries, ...hot].slice(0, limit);
     return {
       memories,
       working: q.working ?? [],
       readMemoryIds: memories.map((item) => item.id),
       injectedMemoryIds: memories.map((item) => item.id),
       usedProvisional: memories.some((item) => item.status === 'provisional'),
+      matchedKeywords,
+      relevantCount,
       elapsedMs: performance.now() - started,
     };
   }

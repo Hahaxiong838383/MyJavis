@@ -1,12 +1,14 @@
 {
   "name": "@myjavis/server",
   "private": true,
-  "version": "0.10.1",
+  "version": "0.11.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc -p tsconfig.json && cp src/rtc-token.cjs dist/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:memory-core": "tsx scripts/memory-core.test.ts",
+    "test:recall-integration": "tsx scripts/recall-integration.test.ts",
     "test:storage": "tsx scripts/storage.test.ts",
     "test:identity": "tsx scripts/identity.test.ts",
     "test:candidates": "tsx scripts/candidates.test.ts",
@@ -27,6 +29,7 @@
     "@hono/node-server": "^1.13.0",
     "@volcengine/openapi": "^1.36.2",
     "hono": "^4.6.0",
+    "jieba-wasm": "2.4.0",
     "jose": "^5.9.0",
     "ws": "^8.18.0",
     "zod": "^3.23.0"

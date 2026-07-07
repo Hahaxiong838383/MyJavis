@@ -95,7 +95,7 @@ import {
 } from '../reminder/intent.js';
 import { reminderStore } from '../reminder/store.js';
 import type { ChatTurn } from '../providers/types.js';
-import type { VolcSpeakerPayload } from '../memory/types.js';
+import type { RecallResult, VolcSpeakerPayload } from '../memory/types.js';
 
 const customLlmRoute = new Hono();
 
@@ -204,15 +204,17 @@ customLlmRoute.post('/chat/completions', async (c) => {
               working: history.map((turn) => ({ role: turn.role, content: turn.content, ts: Date.now() })),
               limit: 8,
             })
-            .catch((err) => ({
-              memories: [],
-              working: [],
-              readMemoryIds: [],
-              injectedMemoryIds: [],
-              usedProvisional: false,
-              degradationReason: err instanceof Error ? err.message : String(err),
-              elapsedMs: 0,
-            })),
+            .catch(
+              (err): RecallResult => ({
+                memories: [],
+                working: [],
+                readMemoryIds: [],
+                injectedMemoryIds: [],
+                usedProvisional: false,
+                degradationReason: err instanceof Error ? err.message : String(err),
+                elapsedMs: 0,
+              }),
+            ),
         )
       : undefined;
   if (contextBundle) {
@@ -221,6 +223,8 @@ customLlmRoute.post('/chat/completions', async (c) => {
       injectedMemoryIds: contextBundle.injectedMemoryIds,
       degradationReason: contextBundle.degradationReason,
       usedProvisional: contextBundle.usedProvisional,
+      matchedKeywords: contextBundle.matchedKeywords,
+      relevantCount: contextBundle.relevantCount,
     });
   }
   // 身份注入走 contextNote（history 之后、当前消息之前=近因最强位）：放 system 尾部会被
