@@ -24,8 +24,10 @@ export function ActivationGate({ onActivated }: { onActivated: () => void }) {
       }
       setInviteToken(token);
       onActivated();
-    } catch {
-      setError('连不上服务器，检查网络后重试');
+    } catch (err) {
+      // 细化网络错误（2026-07-07 内测报障"连不上服务器"太笼统难定位）：带原始错误 + 一步自检指引
+      const msg = err instanceof Error && err.message ? err.message : '网络错误';
+      setError(`连不上服务器（${msg}）。试试换个网络（如手机热点）；或在浏览器打开 javis.chenchuan.cc/health，能看到文字说明网络通、看不到就是当前网络连不到服务器。`);
     } finally {
       setBusy(false);
     }
