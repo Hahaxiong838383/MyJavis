@@ -17,24 +17,24 @@ const identity = new VolcIdentityProvider(storage);
 const resolved = identity.resolve({ roomId: 'recall', voiceprintId: 'vp_recall', score: 0.95 });
 const ownerId = resolved.ownerId!;
 
-// 1) 目标记忆走真实链路写入（safety 类，抽取/准入全真）
+// 1) 目标记忆走真实链路写入（event 类——safety 已走隐私路由不落云端，见 privacy.test）
 await memory.remember({
   roomId: 'recall',
   ownerId,
   identity: resolved,
-  utterance: '我对青霉素过敏',
+  utterance: '我明天早上6点的航班',
   sourceRole: 'user',
   isFinal: true,
 });
-const target = storage.listOwnerMemories(ownerId, 20).find((item) => item.type === 'safety');
-assert.ok(target, '目标 safety 记忆应落库');
+const target = storage.listOwnerMemories(ownerId, 20).find((item) => item.type === 'event');
+assert.ok(target, '目标 event 记忆应落库');
 assert.equal(target!.status, 'committed');
 
 // 2) 灌 12 条互不相关、时间在目标之后的 event 记忆（storage 层直插——写入链路已被
 //    lifecycle/storage 测试覆盖，这里只为把目标挤出"最近 N 条"窗口，模拟目标被后续
-//    话题淹没；内容刻意与"青霉素/过敏"零词重叠。created_at 不可变列，故用"目标先说、
+//    话题淹没；内容刻意与"航班"零词重叠。created_at 不可变列，故用"目标先说、
 //    闲聊后说"的时间序而非拨旧目标；半衰期衰减已由 memory-core 单测覆盖）
-const topics = ['航班值机', '快递取件', '球赛比分', '汇率牌价', '路况拥堵', '菜谱做法', '电影场次', '油价调整', '球鞋清洗', '空调维修', '花园浇水', '手机换膜'];
+const topics = ['图书馆还书', '快递取件', '球赛比分', '汇率牌价', '路况拥堵', '菜谱做法', '电影场次', '油价调整', '球鞋清洗', '空调维修', '花园浇水', '手机换膜'];
 for (let i = 0; i < topics.length; i++) {
   const item: MemoryItem = {
     ...target!,
@@ -53,12 +53,12 @@ const oldStyle = storage.listHotMemories(ownerId, 8).filter((item) => item.type 
 assert.ok(!oldStyle.some((item) => item.id === target!.id), '【对照】旧逻辑注入窗必不含目标记忆');
 
 // 4) 新逻辑：recall 必召回
-const result = await memory.recall({ ownerId, query: '我对什么过敏来着', limit: 8 });
+const result = await memory.recall({ ownerId, query: '我的航班是几点来着', limit: 8 });
 assert.ok(
   result.memories.some((item) => item.id === target!.id),
   `【核心】新 recall 必含目标记忆，实际注入: ${result.memories.map((m) => m.content.key).join(',')}`,
 );
-assert.ok(result.matchedKeywords?.includes('过敏'), `matchedKeywords 应含"过敏"，实际: ${result.matchedKeywords}`);
+assert.ok(result.matchedKeywords?.includes('航班'), `matchedKeywords 应含"航班"，实际: ${result.matchedKeywords}`);
 assert.ok((result.relevantCount ?? 0) >= 1, 'relevantCount ≥1');
 assert.ok(result.memories.length <= 8, '不超 limit');
 assert.ok(result.elapsedMs < 200, `recall 应 <200ms，实际 ${result.elapsedMs.toFixed(1)}ms`);
@@ -83,7 +83,7 @@ assert.deepEqual(
 );
 
 // 7) 无身份：行为不变（identity_unstable 降级）
-const noOwner = await memory.recall({ ownerId: undefined, query: '我对什么过敏', limit: 8 });
+const noOwner = await memory.recall({ ownerId: undefined, query: '我的航班几点', limit: 8 });
 assert.equal(noOwner.degradationReason, 'identity_unstable');
 assert.equal(noOwner.memories.length, 0);
 

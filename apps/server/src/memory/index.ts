@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { SQLiteMemoryStorage } from './storage.js';
 import { EventLog } from '../session/event-log.js';
 import { mixRecall, tokenizeQuery, warmupTokenizer, type RecallDoc } from '../memory-core/index.js';
+import { classifyPrivacy, hasSensitiveContent } from '../memory-core/privacy.js';
+import { holdPrivacyItem } from '../privacy/hold-store.js';
+import { getSessionContextForOwner, type SessionPrivacyItem } from '../privacy/session-context.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
@@ -39,6 +42,26 @@ function toRecallDoc(item: MemoryItem): RecallDoc {
     text: [item.content.key, item.content.value, item.sourceSpan].filter(Boolean).join(' '),
     createdAt: item.createdAt,
     confidenceWeight: item.status === 'provisional' ? 0.7 : 1.0,
+  };
+}
+
+/** 通话级隐私上下文项 → 轻量 MemoryItem（仅供本轮 prompt 注入，绝不落库）。 */
+function sessionItemToMemoryItem(item: SessionPrivacyItem): MemoryItem {
+  const knownTypes: MemoryType[] = ['preference', 'profile_fact', 'event', 'reminder', 'relationship', 'location', 'safety', 'ephemeral_context'];
+  const type = (knownTypes as string[]).includes(item.type) ? (item.type as MemoryType) : 'profile_fact';
+  return {
+    id: item.id,
+    ownerId: item.ownerId,
+    namespace: `private:${item.ownerId}`,
+    type,
+    content: { kind: type, key: 'vault.local', value: item.text, source: 'user_said' },
+    sourceRole: 'user',
+    sourceSpan: '',
+    confidence: 1,
+    status: 'committed',
+    createdAt: item.createdAt,
+    provenance: { origin: 'local_vault' },
+    acl: { read: [item.ownerId], write: [item.ownerId], delete: [item.ownerId] },
   };
 }
 
@@ -163,9 +186,17 @@ export class MyJavisMemory implements Memory {
     let relevantCount: number | undefined;
     if (q.query?.trim()) {
       const candidates = this.db.listRecallCandidates(q.ownerId, RECALL_CANDIDATE_CAP);
-      if (candidates.length > 0) {
-        const byId = new Map(candidates.map((item) => [item.id, item]));
-        const mix = mixRecall(q.query, candidates.map(toRecallDoc), { relevantK: 5, recentK: 3, cap: limit });
+      // R2：合并通话级隐私上下文（App 上行的本机 vault 记忆，已按 owner 过滤——分人红线）；
+      // 与云端候选同池统一打分，server 全程内存零落盘。
+      const sessionItems = getSessionContextForOwner(q.roomId, q.ownerId);
+      if (candidates.length > 0 || sessionItems.length > 0) {
+        const byId = new Map<string, MemoryItem>(candidates.map((item) => [item.id, item]));
+        for (const s of sessionItems) if (!byId.has(s.id)) byId.set(s.id, sessionItemToMemoryItem(s));
+        const docs = [
+          ...candidates.map(toRecallDoc),
+          ...sessionItems.map((s) => ({ id: s.id, text: s.text, createdAt: s.createdAt, confidenceWeight: 1.0 })),
+        ];
+        const mix = mixRecall(q.query, docs, { relevantK: 5, recentK: 3, cap: limit });
         if (mix.picked) {
           hot = mix.picked.map((doc) => byId.get(doc.id)).filter((item): item is MemoryItem => Boolean(item));
           matchedKeywords = mix.matchedKeywords;
@@ -225,6 +256,8 @@ export class MyJavisMemory implements Memory {
         confidence: 0,
         reason: 'prompt_injection',
       });
+      const routed = this.routePrivacy(item, input, event.id, true);
+      if (routed) return routed;
       this.db.insertMemoryItem(item);
       this.audit({
         ownerId,
@@ -237,14 +270,21 @@ export class MyJavisMemory implements Memory {
     }
 
     const candidates = extractMemoryCandidates(input.utterance, input.ts ?? Date.now());
+    // R2 整轮敏感预判：本轮任何 audit/event 是否需要脱敏——一句话可能同时抽出隐私+普通
+    // 候选，普通候选的审计若带全句原话同样泄露；无候选句子命中敏感词也顺手脱敏。
+    const turnSensitive =
+      hasSensitiveContent(input.utterance) ||
+      candidates.some((cand) => classifyPrivacy({ type: cand.type, key: cand.content.key, value: cand.content.value, sourceSpan: cand.sourceSpan }).isPrivate);
+    const auditUtterance = turnSensitive ? '[隐私脱敏]' : input.utterance;
     if (candidates.length === 0) {
+      if (turnSensitive) this.db.redactEventUtterance(event.id, '[隐私脱敏:无记忆候选]');
       const escalation = maybeEscalateAmbiguousToLlm();
       this.audit({
         ownerId,
         kind: 'admission',
         decision: { action: 'ignore', type: 'ephemeral_context', confidence: 0, conflicts: [], rationale: 'no_explicit_trigger' },
         rationale: 'no_explicit_trigger',
-        signal: { utterance: input.utterance, eventId: event.id, escalation },
+        signal: { utterance: auditUtterance, eventId: event.id, escalation },
       });
       return { eventId: event.id, status: 'skipped', reason: 'no_explicit_trigger' };
     }
@@ -259,6 +299,8 @@ export class MyJavisMemory implements Memory {
         confidence: input.identity?.evidence.confidence ?? 0,
         reason: input.identity?.reason ?? 'identity_unstable',
       });
+      const routed = this.routePrivacy(item, input, event.id, true);
+      if (routed) return routed;
       this.db.insertMemoryItem(item);
       this.audit({
         ownerId,
@@ -272,7 +314,11 @@ export class MyJavisMemory implements Memory {
           status: 'quarantine',
         },
         rationale: input.identity?.reason ?? 'identity_unstable',
-        signal: { utterance: input.utterance, eventId: event.id, candidate: candidates[0] },
+        signal: {
+          utterance: auditUtterance,
+          eventId: event.id,
+          candidate: turnSensitive ? { type: candidates[0]!.type, key: candidates[0]!.content.key } : candidates[0],
+        },
       });
       return { eventId: event.id, memoryId: item.id, status: 'quarantined', reason: input.identity?.reason ?? 'identity_unstable' };
     }
@@ -286,7 +332,11 @@ export class MyJavisMemory implements Memory {
         kind: 'admission',
         decision: decision as unknown as Record<string, unknown>,
         rationale: decision.rationale,
-        signal: { utterance: input.utterance, eventId: event.id, candidate },
+        signal: {
+          utterance: auditUtterance,
+          eventId: event.id,
+          candidate: turnSensitive ? { type: candidate.type, key: candidate.content.key } : candidate,
+        },
       });
       if (decision.action === 'ignore') {
         lastResult = { eventId: event.id, status: 'skipped', decision, reason: decision.rationale };
@@ -308,6 +358,11 @@ export class MyJavisMemory implements Memory {
         confidence: decision.confidence,
         conflicts: decision.conflicts,
       });
+      const routed = this.routePrivacy(item, input, event.id, false);
+      if (routed) {
+        lastResult = routed;
+        continue;
+      }
       this.db.insertMemoryItem(item);
       if (candidate.type === 'preference') this.recomputePrefSummary(ownerId, candidate.dimension);
       lastResult = {
@@ -319,6 +374,42 @@ export class MyJavisMemory implements Memory {
     }
 
     return lastResult;
+  }
+
+  /**
+   * R2 隐私路由（docs/memory-architecture.md §4.2）：命中 → 云端零持久化。
+   * - 正常记忆：进内存 hold 队列等 App 拉走落本机 vault；无租户上下文=无拉取方 → 直接丢弃（宁丢勿泄）。
+   * - quarantine 记忆（注入嫌疑/身份不稳）：可疑内容不给 App，直接丢弃。
+   * - 两种情况都回头脱敏 event_log 原话行；审计只记 type/命中依据，绝不记内容。
+   * 未命中返回 null，调用方走原路径。
+   */
+  private routePrivacy(item: MemoryItem, input: RememberInput, eventId: string, isQuarantine: boolean): RememberResult | null {
+    const privacy = classifyPrivacy({
+      type: item.type,
+      key: item.content.key,
+      value: item.content.value,
+      sourceSpan: item.sourceSpan,
+    });
+    if (!privacy.isPrivate) return null;
+
+    let rationale: string;
+    if (isQuarantine) {
+      rationale = 'privacy_quarantine_dropped';
+    } else if (input.tenantId) {
+      const { dropped } = holdPrivacyItem(input.tenantId, item, privacy);
+      rationale = dropped > 0 ? `privacy_routed_evicted_${dropped}` : 'privacy_routed';
+    } else {
+      rationale = 'privacy_dropped_no_tenant';
+    }
+    this.db.redactEventUtterance(eventId, `[隐私路由:${item.type}]`);
+    this.audit({
+      ownerId: item.ownerId,
+      kind: 'privacy',
+      decision: { action: 'route', type: item.type, reason: privacy.reason, hit: privacy.hit, rationale },
+      rationale,
+      signal: { eventId, memoryId: item.id },
+    });
+    return { eventId, memoryId: item.id, status: 'privacy_routed', reason: rationale };
   }
 
   private buildMemoryItem(args: {

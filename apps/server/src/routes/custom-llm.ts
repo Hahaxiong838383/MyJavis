@@ -54,6 +54,7 @@ import {
 } from '../voiceprint/forget-session.js';
 import { deleteVoicePrint } from '../voiceprint/volc-api.js';
 import { removeVoiceprint } from '../voiceprint/registry.js';
+import { hasSensitiveContent } from '../memory-core/privacy.js';
 import { detectMusicIntent } from '../music/music-intent.js';
 import { musicPlay, musicPlayById } from '../music/orchestrator-client.js';
 import { setPending } from '../music/pending-store.js';
@@ -200,6 +201,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
           memory
             .recall({
               ownerId: identityResolution.ownerId,
+              roomId: sessionId,
               query: userText,
               working: history.map((turn) => ({ role: turn.role, content: turn.content, ts: Date.now() })),
               limit: 8,
@@ -364,6 +366,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
             void memory
               .remember({
                 ownerId: identityResolution.ownerId,
+                tenantId: tenant?.id,
                 identity: identityResolution,
                 eventId: userEvent.id,
                 roomId: sessionId ?? 'unknown-room',
@@ -375,11 +378,14 @@ customLlmRoute.post('/chat/completions', async (c) => {
               .catch(() => {});
           }
           if (!discarded && assistantText.trim()) {
+            // R2 隐私：助手回复可能复述用户隐私（"好的，你对X过敏我记住了"）——命中敏感词
+            // 的回复只存脱敏占位（生产实测抓到 event_log 泄露路径，2026-07-07）
+            const spoken = assistantText.trim();
             eventLog.appendUtterance({
               roomId: sessionId ?? 'unknown-room',
               isFinal: true,
               sourceRole: 'assistant',
-              utteranceText: assistantText.trim(),
+              utteranceText: hasSensitiveContent(spoken) ? '[隐私脱敏:助手回复]' : spoken,
               heardByUser: true,
             });
           }

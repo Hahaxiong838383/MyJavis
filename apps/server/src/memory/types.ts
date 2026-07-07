@@ -104,6 +104,8 @@ export interface RecallQuery {
   query: string;
   working?: ChatWorkingTurn[];
   limit?: number;
+  /** 房间 id（R2：用于合并 App 上行的通话级隐私上下文，见 privacy/session-context）。 */
+  roomId?: string;
 }
 
 export interface RecallResult extends ContextBundle {
@@ -112,6 +114,8 @@ export interface RecallResult extends ContextBundle {
 
 export interface RememberInput {
   ownerId?: string;
+  /** 租户上下文（R2 隐私路由 hold 队列按租户分桶；调用方从请求上下文透传）。 */
+  tenantId?: string;
   identity?: IdentityResolution;
   eventId?: string;
   roomId: string;
@@ -128,7 +132,7 @@ export interface RememberInput {
 export interface RememberResult {
   eventId: string;
   memoryId?: string;
-  status: 'stored' | 'updated' | 'deleted' | 'reattributed' | 'quarantined' | 'skipped';
+  status: 'stored' | 'updated' | 'deleted' | 'reattributed' | 'quarantined' | 'skipped' | 'privacy_routed';
   decision?: AdmissionDecision;
   reason?: string;
 }

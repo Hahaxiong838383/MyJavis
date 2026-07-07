@@ -14,7 +14,12 @@ const resolved = identity.resolve({ roomId: 'life', voiceprintId: 'vp_life', sco
 const ownerId = resolved.ownerId!;
 
 await remember('我明天早上6点的航班');
-await remember('我对青霉素过敏');
+// R2 起 safety 类走隐私路由（不落云端库）：断言路由语义而非落库
+const safetyResult = await memory.remember({
+  roomId: 'life', ownerId, identity: resolved,
+  utterance: '我对青霉素过敏', sourceRole: 'user', isFinal: true,
+});
+assert.equal(safetyResult.status, 'privacy_routed');
 await remember('记住我喜欢冰美式');
 await remember('记住今天阳光不错');
 
@@ -26,8 +31,7 @@ const ephemeral = items.find((item) => item.type === 'ephemeral_context');
 
 assert.equal(event?.status, 'committed');
 assert.ok(event?.validUntil);
-assert.equal(safety?.status, 'committed');
-assert.equal(safety?.ttl, undefined);
+assert.equal(safety, undefined, 'safety 类不再落云端库（隐私路由）');
 assert.equal(preference?.status, 'provisional');
 assert.equal(ephemeral?.status, 'provisional');
 assert.ok(ephemeral?.ttl);

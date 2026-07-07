@@ -8,7 +8,9 @@
  * bootEpoch：server 重启 counter 归零，换 epoch 保证前端字符串比较必然"变化"，不漏刷。
  */
 
-export type SyncDomain = 'voiceprint' | 'reminder';
+export type SyncDomain = 'voiceprint' | 'reminder' | 'privacy';
+
+const DOMAINS: SyncDomain[] = ['voiceprint', 'reminder', 'privacy'];
 
 const bootEpoch = Date.now().toString(36);
 const counters = new Map<string, number>(); // `${tenantId}:${domain}` → counter
@@ -20,8 +22,7 @@ export function bumpSyncVersion(tenantId: string | undefined | null, domain: Syn
 }
 
 export function getSyncVersions(tenantId: string): Record<SyncDomain, string> {
-  return {
-    voiceprint: `${bootEpoch}:${counters.get(`${tenantId}:voiceprint`) ?? 0}`,
-    reminder: `${bootEpoch}:${counters.get(`${tenantId}:reminder`) ?? 0}`,
-  };
+  return Object.fromEntries(
+    DOMAINS.map((domain) => [domain, `${bootEpoch}:${counters.get(`${tenantId}:${domain}`) ?? 0}`]),
+  ) as Record<SyncDomain, string>;
 }

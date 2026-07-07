@@ -10,6 +10,8 @@ import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
 import { VoiceprintPanel } from './components/VoiceprintPanel';
 import { ReminderPanel } from './components/ReminderPanel';
+import { PrivacyVaultPanel } from './components/PrivacyVaultPanel';
+import { usePrivacyVaultSync, useSessionContextPush } from './usePrivacyVault';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ActivationGate } from './components/ActivationGate';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -47,6 +49,8 @@ function MainApp() {
   const { guardState, wake, waking, kwsStatus } = useMusicGuard({ connected, roomId, setMicMuted });
   useReminderDelivery(); // 提醒触达档2：独立于通话的轮询（通知+念出）
   useSyncVersions(); // UI 同步：语音/调度器改了数据 → 面板 ≤5s 自动刷新
+  usePrivacyVaultSync(); // R2 隐私 vault：拉取云端 hold → 本机落库 → server 即焚
+  useSessionContextPush(connected, roomId); // R2 通话注入：vault 上行 server 内存，挂断即弃
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
@@ -135,6 +139,7 @@ function MainApp() {
         <SettingsPanel />
         <ReminderPanel />
         <VoiceprintPanel />
+        <PrivacyVaultPanel />
         <GovernancePanel />
       </main>
 

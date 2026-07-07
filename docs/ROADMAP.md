@@ -16,7 +16,7 @@ v0.10.0 内测阶段全项目盘点结论：四层架构（语音 I/O/声纹/记
 | P1 | ⭐ Reminder 主动提醒 | 三档触达 + 错过补报 + 复述确认，主动性质变 | 中 | ✅ v0.11.0 |
 | P1 | 声纹优化包 S1-S3 | 名字确认/语音删除/满员话术，修真机踩过的坑 | 小 | ✅ v0.11.0 |
 | P1 | 判停 1000ms 真机体感复测 | 2026-07-07 才真生效（pm2 快照坑），川哥用两天反馈 | 零 | ⬜ 等反馈 |
-| P2 | 记忆架构两层化 R1-R4 | **App 内隐私 vault（tauri-plugin-sql+jieba-wasm+分层记忆）+ 云端长线层，同构双部署（共享包 @myjavis/memory-core）**；方案定稿 [memory-architecture.md](./memory-architecture.md)（2026-07-07 川哥拍板，Ollama 档不做）。**R1+R1.1 ✅ v0.12.0**（云端检索相关性化：memory-core 内核+recall 接入+telemetry，生产 E2E 全绿 memoryReadMs 1.4ms；R1.1=治理面板召回预览打通+版本 App/server 对齐 0.12.0；包形态推迟 R2）→ R2 本机 vault+tray(~4d) ∥ R3 bi-temporal+V3 决策(~1.5d) → R4 异步巩固(~1d)。backlog：candidates 抽取器疑问句防误抽（"我对什么过敏"抽成 value=什么，预览实测发现） | 中大 | 🔄 R1/R1.1 完成 |
+| P2 | 记忆架构两层化 R1-R4 | **App 内隐私 vault（tauri-plugin-sql+jieba-wasm+分层记忆）+ 云端长线层，同构双部署（共享包 @myjavis/memory-core）**；方案定稿 [memory-architecture.md](./memory-architecture.md)（2026-07-07 川哥拍板，Ollama 档不做）。**R1+R1.1 ✅ v0.12.0**（云端检索相关性化+召回预览+版本对齐）**R2 ✅ v0.13.0**（本机隐私 vault：分类器三层锚点+hold/拉/焚+session-context 通话注入分人红线+脱敏三道防线含 assistant 复述+tray 常驻+登录自启开关；提炼代理挪 R4）→ R3 bi-temporal+V3 决策(~1.5d) → R4 异步巩固+本机提炼代理(~1.5d)。backlog：candidates 疑问句防误抽；vault Mini 加密备份 | 中大 | 🔄 R1/R2 完成 |
 | P2 | 音乐体验包 | 搜索 ranking 音乐向/播完自动下一首/循环随机/音量绝对值/收藏（详见 music-orchestrator TODO.md P1） | 中 | ⬜ |
 | P2 | 高风险实体确认流 | 手机号/地址/健康/金额复述后才 committed（HANDOFF P1-7） | 小中 | ⬜ |
 | P3 | 租户使用观测 | 谁在用/记忆增长/错误率小看板，指导内测迭代 | 小 | ⬜ |

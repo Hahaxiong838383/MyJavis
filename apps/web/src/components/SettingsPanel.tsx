@@ -5,12 +5,34 @@ import { apiFetch, clearInviteToken, getInviteToken } from '../api';
  * 账号设置面板（批次B）：人设 prompt（叠加在锁定基座上）+ Javis 对我的称呼 + 退出激活。
  * 配置存 server 端（跟着邀请码走，换电脑不丢）。
  */
+const isTauri = (): boolean => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
 export function SettingsPanel() {
   const [name, setName] = useState('');
+  const [autostart, setAutostart] = useState<boolean | null>(null); // null=不可用(浏览器)
   const [userTitle, setUserTitle] = useState('');
   const [personaExtra, setPersonaExtra] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void import('@tauri-apps/plugin-autostart')
+      .then(async (m) => setAutostart(await m.isEnabled()))
+      .catch(() => setAutostart(null));
+  }, []);
+
+  const toggleAutostart = async () => {
+    if (autostart === null) return;
+    try {
+      const m = await import('@tauri-apps/plugin-autostart');
+      if (autostart) await m.disable();
+      else await m.enable();
+      setAutostart(await m.isEnabled());
+    } catch (error) {
+      setMessage(`登录自启设置失败：${(error as Error).message}`);
+    }
+  };
 
   useEffect(() => {
     void (async () => {
@@ -89,6 +111,12 @@ export function SettingsPanel() {
         />
       </label>
 
+      {autostart !== null && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: '#cbd5e1', cursor: 'pointer' }}>
+          <input type="checkbox" checked={autostart} onChange={() => void toggleAutostart()} />
+          登录时自动启动（App 常驻菜单栏，提醒与本机隐私记忆不断线）
+        </label>
+      )}
       <div style={styles.footerRow}>
         <span style={styles.message}>{message}</span>
         {getInviteToken() && (

@@ -1,7 +1,7 @@
 {
   "name": "@myjavis/server",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:memory-core": "tsx scripts/memory-core.test.ts",
     "test:recall-integration": "tsx scripts/recall-integration.test.ts",
+    "test:privacy": "tsx scripts/privacy.test.ts",
     "test:storage": "tsx scripts/storage.test.ts",
     "test:identity": "tsx scripts/identity.test.ts",
     "test:candidates": "tsx scripts/candidates.test.ts",

@@ -38,18 +38,18 @@ say() { # say <文本> → 带 mock 声纹身份（score 0.9 = stable）的 /v1 
 }
 
 # 1) 提问触发召回（种子已含目标记忆 + 10 条挤窗 event）
-say "我对什么过敏来着" > /dev/null
+say "我的航班是几点来着" > /dev/null
 sleep 1
 
 # 2) telemetry 断言：最后一轮 turn 记录
 LAST=$(grep '"kind":"turn"' "$TELDIR/turns.ndjson" 2>/dev/null | tail -1)
 [ -z "$LAST" ] && LAST=$(tail -1 "$TELDIR/turns.ndjson" 2>/dev/null || echo "")
 ck "telemetry 有 turn 记录" "$LAST" '"kind":"turn"'
-ck "matchedKeywords 命中「过敏」" "$LAST" '过敏'
+ck "matchedKeywords 命中「航班」" "$LAST" '航班'
 ck "relevantCount ≥1" "$LAST" '"relevantCount":[1-9]'
 ck "有注入记忆" "$LAST" '"injectedMemoryIds":\["'
 # 目标记忆 id 真的在注入列表里（挤窗后仍召回，HTTP 层复核集成测试结论）
-TARGET_ID=$(sqlite3 "$DB" "SELECT id FROM memory_item WHERE type='safety' LIMIT 1" 2>/dev/null || echo "")
+TARGET_ID=$(sqlite3 "$DB" "SELECT id FROM memory_item WHERE json_extract(content_structured_json,'\$.key') LIKE 'event.flight%' OR source_span LIKE '%航班%' ORDER BY created_at LIMIT 1" 2>/dev/null || echo "")
 if [ -n "$TARGET_ID" ]; then
   ck "目标记忆在注入列表" "$LAST" "$TARGET_ID"
 fi
@@ -65,11 +65,11 @@ else
 fi
 
 # 6) 治理面板召回预览端点（R1.1）：命中/退化两态
-OWNER=$(sqlite3 "$DB" "SELECT owner_id FROM memory_item WHERE type='safety' LIMIT 1" 2>/dev/null || echo "")
+OWNER=$(sqlite3 "$DB" "SELECT owner_id FROM memory_item ORDER BY created_at LIMIT 1" 2>/dev/null || echo "")
 if [ -n "$OWNER" ]; then
-  PV=$(curl -s "$BASE/api/governance/recall-preview?owner=$OWNER&q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('我对什么过敏来着'))")" -H "X-Javis-Key: e2e-admin")
+  PV=$(curl -s "$BASE/api/governance/recall-preview?owner=$OWNER&q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('我的航班是几点来着'))")" -H "X-Javis-Key: e2e-admin")
   ck "预览命中态 degraded=false" "$PV" '"degraded":false'
-  ck "预览命中关键词" "$PV" '过敏'
+  ck "预览命中关键词" "$PV" '航班'
   ck "预览含 relevant 来源" "$PV" '"source":"relevant"'
   ck "预览含 recent 保底" "$PV" '"source":"recent"'
   PV2=$(curl -s "$BASE/api/governance/recall-preview?owner=$OWNER&q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('嗯嗯好的'))")" -H "X-Javis-Key: e2e-admin")

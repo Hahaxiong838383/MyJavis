@@ -271,6 +271,15 @@ export class SQLiteMemoryStorage {
       );
   }
 
+  /**
+   * R2 隐私路由：记忆改道本机 vault 后，回头脱敏 event_log 里的原话行——
+   * 否则"云端零持久化"承诺被 event_log 打破（原话先于抽取落库）。
+   * 原文随记忆条目的 sourceSpan 去了 App vault，溯源链在本机侧保持完整。
+   */
+  redactEventUtterance(eventId: string, note: string): void {
+    this.db.prepare(`UPDATE event_log SET utterance_text = ? WHERE id = ?`).run(note, eventId);
+  }
+
   getEvent(id: string): EventLogRecord | undefined {
     const row = this.db.prepare(`SELECT * FROM event_log WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
