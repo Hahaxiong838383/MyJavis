@@ -19,6 +19,17 @@ export interface ReminderDto {
   speakerName?: string;
 }
 
+/** 启动时预请求通知权限（第一条提醒到达时才弹权限框的话，用户很可能不在电脑前）。 */
+async function warmupNotifyPermission(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
+    if (!(await isPermissionGranted())) await requestPermission();
+  } catch {
+    /* 插件不可用：忽略 */
+  }
+}
+
 async function notifySystem(title: string, body: string): Promise<void> {
   if (!isTauri()) return;
   try {
@@ -48,6 +59,7 @@ const POLL_MS = 15_000;
 /** App 根组件调用一次；未激活（无邀请码）时 401 静默，激活后自然生效。 */
 export function useReminderDelivery(): void {
   useEffect(() => {
+    void warmupNotifyPermission();
     const seen = new Set<string>();
     const tick = async (): Promise<void> => {
       try {
