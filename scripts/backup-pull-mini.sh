@@ -18,6 +18,12 @@ mkdir -p "$DEST/db"
   ls -1t "$DEST"/db/*.gz 2>/dev/null | tail -n +31 | xargs rm -f -- 2>/dev/null || true
   echo "$(date '+%F %T') pull OK ($(ls "$DEST/db" | wc -l | tr -d ' ') 份在库)"
   date '+%F %T' > "$DEST/last-success.txt"
-  # Kuma push 心跳(待 Codex 交 push URL 后取消注释):
-  # curl -fsS -m 10 "https://ops.hahaxiong.top/api/push/<token>" >/dev/null || true
+  # Kuma push 心跳:URL 存 $DEST/kuma-push-url(600,不入 git);超 36h 无心跳→飞书运维告警。
+  # 心跳失败只记日志不改退出码(备份本身已成功)。
+  KUMA_URL_FILE="$DEST/kuma-push-url"
+  if [[ -f "$KUMA_URL_FILE" ]]; then
+    curl -fsS -m 10 "$(cat "$KUMA_URL_FILE")" >/dev/null \
+      && echo "$(date '+%F %T') kuma push OK" \
+      || echo "$(date '+%F %T') kuma push FAILED(备份本身已成功)"
+  fi
 } >> "$LOG" 2>&1
