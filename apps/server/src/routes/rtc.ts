@@ -70,8 +70,47 @@ interface VoiceChatOptions {
  */
 const agentSessions = new Map<
   string,
-  { userId: string; tenantId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number }
+  { userId: string; tenantId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number; startedAt: number }
 >();
+
+/**
+ * R3.1 并发闸门（2026-07-08 川哥拍板堵口子）：此前任何激活租户可无限开房，
+ * 每路都在烧火山任务钱；且关 App 不调 /stop 会留僵尸房（注册表残留+火山任务空转）。
+ * - 每租户上限（默认 1）：新 start 先踢自己的旧房（旧房大概率是没正常关闭的僵尸，
+ *   踢旧保新对"重开 App 重连"场景最友好）
+ * - 全局上限（默认 8）：为火山账号并发配额留余量，超限 429 友好话术
+ * - 僵尸兜底：在册超 4h 判僵尸（正常通话不会这么长），start 时顺手清扫
+ */
+const MAX_ROOMS_PER_TENANT = Number(process.env.MAX_ROOMS_PER_TENANT ?? 1);
+const MAX_GLOBAL_ROOMS = Number(process.env.MAX_GLOBAL_ROOMS ?? 8);
+const ROOM_ZOMBIE_TTL_MS = Number(process.env.ROOM_ZOMBIE_TTL_MS ?? 4 * 3600_000);
+
+/** 尽力停房：火山任务 StopVoiceChat（失败忽略——可能早已自停）+ 本地注册/override 清理。 */
+async function stopRoomBestEffort(roomId: string, reason: string): Promise<void> {
+  clearPromptOverride(roomId);
+  agentSessions.delete(roomId);
+  try {
+    await callRtcOpenAPI('StopVoiceChat', {
+      AppId: process.env.VOLC_RTC_APP_ID,
+      RoomId: roomId,
+      TaskId: roomId,
+    });
+    console.log(`[rtc] room evicted (${reason}) room=${roomId}`);
+  } catch {
+    console.log(`[rtc] room evict stop-call failed (ignored, ${reason}) room=${roomId}`);
+  }
+}
+
+async function sweepZombieRooms(now = Date.now()): Promise<void> {
+  for (const [roomId, sess] of agentSessions) {
+    if (now - sess.startedAt > ROOM_ZOMBIE_TTL_MS) await stopRoomBestEffort(roomId, 'zombie-ttl');
+  }
+}
+
+/** 观测用：当前在册房间总数。 */
+export function activeRoomCount(): number {
+  return agentSessions.size;
+}
 
 /** 该租户当前在册的房间（reminder 调度器档1路由用）。房间在册≠任务活着（音乐守护
  *  save 模式任务已停），调用方对 ExternalTextToSpeech 失败必须降级处理。 */
@@ -166,6 +205,19 @@ rtcRoute.post('/start', async (c) => {
   }
   const tenant = effectiveTenant(c);
   if (!tenant) return c.json({ ok: false, error: '无租户上下文（邀请码无效或未激活）' }, 401);
+
+  // —— R3.1 并发闸门 ——
+  await sweepZombieRooms();
+  const myRooms = listAgentRooms(tenant.id);
+  if (myRooms.length >= MAX_ROOMS_PER_TENANT) {
+    // 踢旧保新：同码重复开房 = 上一个房没正常关闭（关 App/断网/换设备）
+    for (const old of myRooms) await stopRoomBestEffort(old, `tenant-cap tenant=${tenant.id}`);
+  }
+  if (agentSessions.size >= MAX_GLOBAL_ROOMS) {
+    console.log(`[rtc] global room cap hit (${agentSessions.size}/${MAX_GLOBAL_ROOMS}), tenant=${tenant.id} rejected`);
+    return c.json({ ok: false, error: '现在使用的人比较多，稍等一会儿再试～' }, 429);
+  }
+
   // 开场白租户化：设置了称呼就用称呼打招呼（曾是 env 硬编码"你好川哥"——多租户后按人拼）
   const welcome = tenant.userTitle?.trim() ? `你好${tenant.userTitle.trim()}，我是 Javis，随时吩咐。` : WELCOME;
 
@@ -224,7 +276,7 @@ rtcRoute.post('/start', async (c) => {
   console.log(
     `[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length} welcome="${welcome.slice(0, 12)}…"`,
   );
-  agentSessions.set(roomId, { userId, tenantId: tenant.id, memoryUser, voiceMode, voiceprintScore });
+  agentSessions.set(roomId, { userId, tenantId: tenant.id, memoryUser, voiceMode, voiceprintScore, startedAt: Date.now() });
   return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
 });
 
