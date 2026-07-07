@@ -8,7 +8,7 @@
  */
 import { tokenizeQuery } from './tokenize.js';
 import { scoreDocs } from './score.js';
-import type { MixRecallOptions, MixRecallResult, RecallDoc } from './types.js';
+import type { MixRecallOptions, MixRecallResult, PickedDocDetail, RecallDoc } from './types.js';
 
 export function mixRecall(query: string, docs: RecallDoc[], options: MixRecallOptions = {}): MixRecallResult {
   const relevantK = options.relevantK ?? 5;
@@ -17,7 +17,7 @@ export function mixRecall(query: string, docs: RecallDoc[], options: MixRecallOp
   const halfLifeDays = options.halfLifeDays ?? 30;
   const now = options.now ?? Date.now();
 
-  const degraded: MixRecallResult = { picked: null, matchedKeywords: [], relevantCount: 0 };
+  const degraded: MixRecallResult = { picked: null, matchedKeywords: [], relevantCount: 0, details: [] };
   const queryTokens = tokenizeQuery(query);
   if (queryTokens.length === 0) return degraded;
 
@@ -39,6 +39,12 @@ export function mixRecall(query: string, docs: RecallDoc[], options: MixRecallOp
   }
 
   const picked = [...relevant.map((s) => s.doc), ...fillers].slice(0, cap);
+  const details: PickedDocDetail[] = picked.map((doc): PickedDocDetail => {
+    const hit = relevant.find((s) => s.doc.id === doc.id);
+    return hit
+      ? { id: doc.id, source: 'relevant', matched: hit.matched, keywordScore: hit.keywordScore, salience: hit.salience }
+      : { id: doc.id, source: 'recent', matched: [], keywordScore: 0, salience: 0 };
+  });
   const matchedKeywords = [...new Set(relevant.flatMap((s) => s.matched))];
-  return { picked, matchedKeywords, relevantCount: Math.min(relevant.length, picked.length) };
+  return { picked, matchedKeywords, relevantCount: Math.min(relevant.length, picked.length), details };
 }

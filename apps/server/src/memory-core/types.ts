@@ -46,6 +46,16 @@ export interface MixRecallOptions {
   now?: number;
 }
 
+export interface PickedDocDetail {
+  id: string;
+  /** 入选来源：相关性位 or recency 保底位。 */
+  source: 'relevant' | 'recent';
+  /** 命中的 query token（保底位为空数组）。 */
+  matched: string[];
+  keywordScore: number;
+  salience: number;
+}
+
 export interface MixRecallResult {
   /**
    * null = 相关性召回不适用（query 无有效 token 或全零命中），
@@ -56,4 +66,6 @@ export interface MixRecallResult {
   matchedKeywords: string[];
   /** picked 里来自相关性位的数量（其余为 recency 保底位）。 */
   relevantCount: number;
+  /** 与 picked 一一对应的可解释明细（治理面板召回预览用）；退化时为空数组。 */
+  details: PickedDocDetail[];
 }

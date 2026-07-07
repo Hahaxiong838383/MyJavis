@@ -12,4 +12,4 @@
 export { tokenizeDoc, tokenizeQuery, warmupTokenizer } from './tokenize.js';
 export { scoreDocs, recencyBoost } from './score.js';
 export { mixRecall } from './recall-mix.js';
-export type { MemoryLayer, RecallDoc, ScoredDoc, MixRecallOptions, MixRecallResult } from './types.js';
+export type { MemoryLayer, RecallDoc, ScoredDoc, MixRecallOptions, MixRecallResult, PickedDocDetail } from './types.js';

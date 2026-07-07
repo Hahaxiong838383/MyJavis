@@ -64,7 +64,22 @@ else
   PASS=$((PASS+1)); echo "✅ 退化轮无 matchedKeywords（走旧路径）"
 fi
 
-# 6) server 日志无未捕获异常
+# 6) 治理面板召回预览端点（R1.1）：命中/退化两态
+OWNER=$(sqlite3 "$DB" "SELECT owner_id FROM memory_item WHERE type='safety' LIMIT 1" 2>/dev/null || echo "")
+if [ -n "$OWNER" ]; then
+  PV=$(curl -s "$BASE/api/governance/recall-preview?owner=$OWNER&q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('我对什么过敏来着'))")" -H "X-Javis-Key: e2e-admin")
+  ck "预览命中态 degraded=false" "$PV" '"degraded":false'
+  ck "预览命中关键词" "$PV" '过敏'
+  ck "预览含 relevant 来源" "$PV" '"source":"relevant"'
+  ck "预览含 recent 保底" "$PV" '"source":"recent"'
+  PV2=$(curl -s "$BASE/api/governance/recall-preview?owner=$OWNER&q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('嗯嗯好的'))")" -H "X-Javis-Key: e2e-admin")
+  ck "预览退化态标注原因" "$PV2" '"degradedReason":"empty_query_tokens"'
+  ck "预览退化态给旧路径列表" "$PV2" '"source":"fallback_hot"'
+else
+  FAIL=$((FAIL+1)); echo "❌ 找不到 owner 无法测预览"
+fi
+
+# 7) server 日志无未捕获异常
 ERRS=$(grep -c -iE "uncaught|unhandled" /tmp/e2e-recall-server.log || true)
 if [ "$ERRS" = "0" ]; then PASS=$((PASS+1)); echo "✅ server 无未捕获异常"; else FAIL=$((FAIL+1)); echo "❌ server 有异常: $ERRS 处"; fi
 

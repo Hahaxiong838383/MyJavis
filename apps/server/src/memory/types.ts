@@ -133,8 +133,22 @@ export interface RememberResult {
   reason?: string;
 }
 
+/** 治理面板召回预览（只读，与 recall 同一套检索逻辑 + 可解释明细）。 */
+export interface RecallPreview {
+  degraded: boolean;
+  degradedReason?: 'empty_query_tokens' | 'no_match';
+  matchedKeywords: string[];
+  items: Array<{
+    memory: MemoryItem;
+    source: 'relevant' | 'recent' | 'fallback_hot';
+    matched: string[];
+    salience: number;
+  }>;
+}
+
 export interface Memory {
   recall(q: RecallQuery): Promise<RecallResult>;
+  recallPreview(ownerId: string, query: string): Promise<RecallPreview>;
   remember(input: RememberInput): Promise<RememberResult>;
   listByOwner(ownerId: string): Promise<MemoryItem[]>;
   suspend(ownerId: string, memoryId: string): Promise<GovernanceResult>;

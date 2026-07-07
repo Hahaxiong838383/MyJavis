@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SQLiteMemoryStorage } from './storage.js';
 import { EventLog } from '../session/event-log.js';
-import { mixRecall, warmupTokenizer, type RecallDoc } from '../memory-core/index.js';
+import { mixRecall, tokenizeQuery, warmupTokenizer, type RecallDoc } from '../memory-core/index.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
@@ -14,6 +14,7 @@ import type {
   MemoryStatus,
   MemoryType,
   MemoryCandidate,
+  RecallPreview,
   RecallQuery,
   RecallResult,
   RememberInput,
@@ -107,6 +108,33 @@ export class MyJavisMemory implements Memory {
     }
     this.auditGovernance('reassign', ownerId, memoryId, { targetOwnerId });
     return { ok: true, memoryId };
+  }
+
+  /**
+   * 召回预览（治理面板"试试 Javis 会想起什么"）：与 recall() 同一套检索逻辑，
+   * 但返回带解释的完整明细（命中词/得分/相关位 vs 保底位/退化原因），只读不注入。
+   */
+  async recallPreview(ownerId: string, query: string): Promise<RecallPreview> {
+    const candidates = this.db.listRecallCandidates(ownerId, RECALL_CANDIDATE_CAP);
+    const byId = new Map(candidates.map((item) => [item.id, item]));
+    const mix = mixRecall(query, candidates.map(toRecallDoc), { relevantK: 5, recentK: 3, cap: 8 });
+    if (mix.picked) {
+      const items = mix.details
+        .map((detail) => {
+          const memory = byId.get(detail.id);
+          return memory ? { memory, source: detail.source, matched: detail.matched, salience: detail.salience } : null;
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+      return { degraded: false, matchedKeywords: mix.matchedKeywords, items };
+    }
+    // 退化：展示旧路径（最近高置信）会注入什么，并说明原因
+    const hot = this.db.listHotMemories(ownerId, 8).filter((item) => item.type !== 'preference');
+    return {
+      degraded: true,
+      degradedReason: tokenizeQuery(query).length === 0 ? 'empty_query_tokens' : 'no_match',
+      matchedKeywords: [],
+      items: hot.map((memory) => ({ memory, source: 'fallback_hot' as const, matched: [], salience: 0 })),
+    };
   }
 
   async recall(q: RecallQuery): Promise<RecallResult> {

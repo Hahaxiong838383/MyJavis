@@ -40,6 +40,17 @@ governanceRoute.get('/export', async (c) => {
   return c.json({ ok: true, export: payload });
 });
 
+// R1.1 召回预览（只读）：面板输入一句话 → 看会想起哪些记忆、每条为什么（命中词/来源/得分）。
+// 与真实 recall 同一套逻辑（memory-core mixRecall），退化时展示旧路径注入并说明原因。
+governanceRoute.get('/recall-preview', async (c) => {
+  const ownerId = requiredQuery(c.req.query('owner'));
+  const q = (c.req.query('q') ?? '').trim();
+  if (!ownerId) return c.json({ ok: false, error: 'owner 必填' }, 400);
+  if (!q) return c.json({ ok: false, error: 'q 必填' }, 400);
+  const preview = await memory.recallPreview(ownerId, q);
+  return c.json({ ok: true, ownerId, query: q, ...preview });
+});
+
 governanceRoute.post('/suspend', async (c) => {
   const body = await parseOwnerMemoryBody(c.req.json.bind(c.req));
   if (!body) return c.json({ ok: false, error: 'ownerId + memoryId 必填' }, 400);

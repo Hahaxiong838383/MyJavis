@@ -108,6 +108,14 @@ function doc(id: string, text: string, ageDays: number, confidenceWeight = 1.0):
   assert.equal(mix.relevantCount, 1, '相关位=1');
   const ids = new Set(mix.picked!.map((d) => d.id));
   assert.ok(ids.has('new1') && ids.has('new2') && ids.has('new3'), '最近3条应保底进入');
+  // details 可解释明细：与 picked 一一对应、来源正确、相关位带命中词
+  assert.equal(mix.details.length, mix.picked!.length, 'details 与 picked 等长');
+  assert.deepEqual(mix.details.map((d) => d.id), mix.picked!.map((d) => d.id), 'details 顺序一致');
+  assert.equal(mix.details[0].source, 'relevant');
+  assert.ok(mix.details[0].matched.includes('朵朵'), '相关位 detail 带命中词');
+  assert.ok(mix.details[0].salience > 0);
+  assert.equal(mix.details[1].source, 'recent');
+  assert.deepEqual(mix.details[1].matched, [], '保底位无命中词');
 }
 
 // —— mixRecall：去重——相关位与保底位重叠不重复 ——
