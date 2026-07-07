@@ -1,6 +1,6 @@
 [package]
 name = "myjavis"
-version = "0.11.0"
+version = "0.11.1"
 description = "MyJavis macOS Tauri shell"
 authors = ["MyJavis"]
 edition = "2021"

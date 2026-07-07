@@ -3,6 +3,7 @@ import { useVoiceRtc } from './useVoiceRtc';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
 import { useReminderDelivery } from './useReminders';
+import { useSyncVersions } from './useSyncVersions';
 import { useAppStore } from './store';
 import { currentApiKey } from './api';
 import { PulseOrb } from './components/PulseOrb';
@@ -45,6 +46,7 @@ function MainApp() {
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
   const { guardState, wake, waking, kwsStatus } = useMusicGuard({ connected, roomId, setMicMuted });
   useReminderDelivery(); // 提醒触达档2：独立于通话的轮询（通知+念出）
+  useSyncVersions(); // UI 同步：语音/调度器改了数据 → 面板 ≤5s 自动刷新
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);

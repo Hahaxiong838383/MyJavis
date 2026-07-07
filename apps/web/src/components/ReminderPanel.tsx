@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../api';
+import { useSyncRefresh } from '../useSyncVersions';
 import type { ReminderDto } from '../useReminders';
 
 /**
@@ -41,9 +42,8 @@ export function ReminderPanel() {
 
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(), 60_000); // 低频对齐（语音设置后面板迟早看到）
-    return () => clearInterval(t);
   }, []);
+  useSyncRefresh('reminder', () => void load()); // 语音设置/取消/到点 → ≤5s 自动刷新
 
   const remove = async (id: string) => {
     if (confirmId !== id) {

@@ -4,8 +4,21 @@
     {
       "name": "myjavis-web",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--dir", "/Users/rayman.chen/mycc/2-Projects/MyJavis", "dev:web"],
+      "runtimeArgs": [
+        "--dir",
+        "/Users/rayman.chen/mycc/2-Projects/MyJavis",
+        "dev:web"
+      ],
       "port": 5173
+    },
+    {
+      "name": "myjavis-web-localapi",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/rayman.chen/mycc/2-Projects/MyJavis/apps/web && VITE_API_BASE= VITE_NO_HTTPS=1 pnpm dev --port 5177 --strictPort"
+      ],
+      "port": 5177
     }
   ]
 }

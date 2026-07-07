@@ -33,6 +33,9 @@ say() { # say <房间> <文本> → SSE 全文
 
 R=e2e-room
 
+# ── sync versions 基线 ──
+V0=$(curl -s $BASE/api/sync/versions -H "X-Javis-Key: $TOKEN")
+
 # ── reminder：完整设置（时间+内容）→ 复述 ──
 OUT=$(say $R "提醒我30秒后喝水")
 ck "设置复述(相对时长)" "$OUT" "提醒你：喝水"
@@ -41,6 +44,10 @@ sleep 1.2  # 800ms 去抖提交
 # ── 列表 API 看到 pending ──
 OUT=$(curl -s $BASE/api/reminders -H "X-Javis-Key: $TOKEN")
 ck "列表见 pending" "$OUT" '"content":"喝水"'
+
+# UI 同步：设置(写入)后 reminder 版本变化（面板据此自动刷新）
+V1=$(curl -s $BASE/api/sync/versions -H "X-Javis-Key: $TOKEN")
+if [ "$V0" != "$V1" ]; then PASS=$((PASS+1)); echo "✅ sync版本随reminder写入变化"; else FAIL=$((FAIL+1)); echo "❌ sync版本未变化"; fi
 
 # ── 反问链：缺时间 → 问 → 答 → 复述 ──
 OUT=$(say $R "提醒我买牛奶")
@@ -126,6 +133,12 @@ OUT=$(say $R "忘掉测试人的声音")
 ck "S2 fail后记录保留可重试" "$OUT" "确定要我忘掉「测试人」"
 OUT=$(say $R "不对")
 ck "S2 否认中止" "$OUT" "那就还记着"
+
+# ── UI 同步：声纹改名（写入）→ voiceprint 版本变化 ──
+VV0=$(curl -s $BASE/api/sync/versions -H "X-Javis-Key: $TOKEN" | python3 -c "import json,sys; print(json.load(sys.stdin)['versions']['voiceprint'])")
+curl -s -X POST $BASE/api/voiceprint/rename -H "X-Javis-Key: $TOKEN" -H "Content-Type: application/json" -d '{"voiceprintId":"vp_e2e","displayName":"测试人二号"}' > /dev/null
+VV1=$(curl -s $BASE/api/sync/versions -H "X-Javis-Key: $TOKEN" | python3 -c "import json,sys; print(json.load(sys.stdin)['versions']['voiceprint'])")
+if [ "$VV0" != "$VV1" ]; then PASS=$((PASS+1)); echo "✅ 声纹写入后voiceprint版本变化"; else FAIL=$((FAIL+1)); echo "❌ voiceprint版本未变化"; fi
 
 kill $SRV 2>/dev/null
 rm -f $DB ${DB}-wal ${DB}-shm

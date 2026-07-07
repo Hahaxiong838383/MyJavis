@@ -22,6 +22,7 @@ import { findTenantByToken } from './tenant/registry.js';
 import type { AppEnv } from './tenant/context.js';
 import { musicRoute } from './routes/music.js';
 import { remindersRoute } from './routes/reminders.js';
+import { syncRoute } from './routes/sync.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
 
 // 版本真源 package.json（dist 运行时向上一级找；与 App 版本同步 bump）
@@ -68,6 +69,7 @@ app.route('/api/tenant', tenantRoute); // admin only（租户 CRUD/发码）
 app.route('/api/me', meRoute); // 租户自查/自配（激活校验+persona/称呼）
 app.route('/api/music', musicRoute);
 app.route('/api/reminders', remindersRoute);
+app.route('/api/sync', syncRoute);
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 

@@ -10,6 +10,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { bumpSyncVersion } from '../sync/versions.js';
 
 export type ReminderStatus = 'pending' | 'fired' | 'delivered' | 'missed' | 'cancelled';
 export type DeliveredVia = 'rtc' | 'app' | 'makeup';
@@ -107,6 +108,7 @@ export class ReminderStore {
          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       )
       .run(id, args.tenantId, args.ownerId ?? null, args.speakerName ?? null, args.content, args.dueAt, now, args.roomId ?? null);
+    bumpSyncVersion(args.tenantId, 'reminder');
     return this.get(id)!;
   }
 
@@ -152,6 +154,7 @@ export class ReminderStore {
 
   markFired(id: string): void {
     this.db.prepare(`UPDATE reminder SET status = 'fired', fired_at = ? WHERE id = ? AND status = 'pending'`).run(Date.now(), id);
+    bumpSyncVersion(this.get(id)?.tenantId, 'reminder');
   }
 
   /** 送达（幂等：仅 fired/missed/pending 可转 delivered；返回是否真的转了）。 */
@@ -162,18 +165,24 @@ export class ReminderStore {
          WHERE id = ? AND status IN ('pending','fired','missed')`,
       )
       .run(Date.now(), via, id);
+    if (Number(res.changes) > 0) bumpSyncVersion(this.get(id)?.tenantId, 'reminder');
     return Number(res.changes) > 0;
   }
 
   markMissed(id: string): void {
     this.db.prepare(`UPDATE reminder SET status = 'missed' WHERE id = ? AND status = 'fired'`).run(id);
+    bumpSyncVersion(this.get(id)?.tenantId, 'reminder');
   }
 
   /** fired 超时未被接走 → missed。返回转化条数。 */
   expireFired(olderThanMs: number, now: number): number {
+    const affected = this.db
+      .prepare(`SELECT DISTINCT tenant_id FROM reminder WHERE status = 'fired' AND fired_at IS NOT NULL AND fired_at <= ?`)
+      .all(now - olderThanMs) as unknown as Array<{ tenant_id: string }>;
     const res = this.db
       .prepare(`UPDATE reminder SET status = 'missed' WHERE status = 'fired' AND fired_at IS NOT NULL AND fired_at <= ?`)
       .run(now - olderThanMs);
+    for (const t of affected) bumpSyncVersion(t.tenant_id, 'reminder');
     return Number(res.changes);
   }
 
@@ -182,6 +191,7 @@ export class ReminderStore {
     const res = this.db
       .prepare(`UPDATE reminder SET status = 'cancelled' WHERE id = ? AND status IN ('pending','fired')`)
       .run(id);
+    if (Number(res.changes) > 0) bumpSyncVersion(this.get(id)?.tenantId, 'reminder');
     return Number(res.changes) > 0;
   }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../api';
+import { useSyncRefresh } from '../useSyncVersions';
 
 /**
  * 声纹管理面板（调试区）：列表 + 改名 + 删除。
@@ -43,6 +44,7 @@ export function VoiceprintPanel() {
   useEffect(() => {
     void load();
   }, []);
+  useSyncRefresh('voiceprint', () => void load()); // 语音注册/"忘掉X的声音"删除 → ≤5s 自动刷新
 
   const rename = async (voiceprintId: string) => {
     const name = editName.trim();

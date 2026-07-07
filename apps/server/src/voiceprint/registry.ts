@@ -11,6 +11,7 @@
 import { randomBytes } from 'node:crypto';
 import { storage } from '../memory/index.js';
 import { ownerIdFromVoiceprint } from '../memory/identity/index.js';
+import { bumpSyncVersion } from '../sync/versions.js';
 
 export interface VoiceprintRecord {
   voiceprintId: string;
@@ -86,6 +87,7 @@ export function saveVoiceprint(args: {
     record.createdAt,
     record.updatedAt,
   );
+  bumpSyncVersion(record.tenantId, 'voiceprint');
   return record;
 }
 
@@ -125,7 +127,9 @@ export function getVoiceprint(voiceprintId: string): VoiceprintRecord | undefine
 }
 
 export function removeVoiceprint(voiceprintId: string): boolean {
+  const record = getVoiceprint(voiceprintId);
   const res = db.prepare('DELETE FROM voiceprint WHERE voiceprint_id = ?').run(voiceprintId);
+  if (Number(res.changes) > 0) bumpSyncVersion(record?.tenantId, 'voiceprint');
   return Number(res.changes) > 0;
 }
 
@@ -135,7 +139,9 @@ export function renameVoiceprint(voiceprintId: string, displayName: string): Voi
     .prepare('UPDATE voiceprint SET display_name = ?, updated_at = ? WHERE voiceprint_id = ?')
     .run(displayName, Date.now(), voiceprintId);
   if (Number(res.changes) === 0) return undefined;
-  return getVoiceprint(voiceprintId);
+  const record = getVoiceprint(voiceprintId);
+  bumpSyncVersion(record?.tenantId, 'voiceprint');
+  return record;
 }
 
 function rowToRecord(row: Record<string, unknown>): VoiceprintRecord {
