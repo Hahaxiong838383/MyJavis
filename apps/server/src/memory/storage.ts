@@ -180,12 +180,14 @@ export class SQLiteMemoryStorage {
         ON speaker_evidence(voiceprint_id, state, ts);
     `);
     this.ensureSuspendedColumn();
+    this.ensureBiTemporalColumns();
     this.db.exec(`
       DROP VIEW IF EXISTS hot_readable_memories;
       CREATE VIEW hot_readable_memories AS
         SELECT * FROM memory_item
         WHERE status IN ('committed', 'provisional')
           AND suspended = 0
+          AND invalid_at IS NULL
           AND (valid_until IS NULL OR valid_until > (unixepoch('now') * 1000));
 
       DROP VIEW IF EXISTS quarantined_memories;
@@ -201,6 +203,44 @@ export class SQLiteMemoryStorage {
       const message = err instanceof Error ? err.message : String(err);
       if (!/duplicate column name/i.test(message)) throw err;
     }
+  }
+
+  /**
+   * R3 bi-temporal（graphiti 模式，docs/memory-architecture.md §3）：
+   * 事件时间轴 valid_at/invalid_at（事实何时为真/停止为真）× 系统时间轴 created_at/expired_at
+   * （何时摄入/被系统作废）。矛盾失效=置位而非删除——历史可溯，hot 视图不再可见。
+   */
+  private ensureBiTemporalColumns(): void {
+    for (const col of ['valid_at INTEGER', 'invalid_at INTEGER', 'expired_at INTEGER']) {
+      try {
+        this.db.exec(`ALTER TABLE memory_item ADD COLUMN ${col};`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(message)) throw err;
+      }
+    }
+  }
+
+  /** R3 精修器扫描入口：有活跃记忆的 owner 列表。 */
+  listOwnerIdsWithMemories(): string[] {
+    const rows = this.db
+      .prepare(`SELECT DISTINCT owner_id FROM hot_readable_memories WHERE owner_id != 'unattributed'`)
+      .all() as Array<{ owner_id: string }>;
+    return rows.map((row) => row.owner_id);
+  }
+
+  /** 失效一批旧事实（新事实取代/精修判废）：invalid_at=事实停止为真，expired_at=系统作废时刻。 */
+  invalidateMemoryItems(ids: string[], now = Date.now()): number {
+    if (ids.length === 0) return 0;
+    const stmt = this.db.prepare(
+      `UPDATE memory_item SET invalid_at = ?, expired_at = ? WHERE id = ? AND invalid_at IS NULL`,
+    );
+    let changed = 0;
+    for (const id of ids) {
+      const result = stmt.run(now, now, id) as { changes: number | bigint };
+      changed += Number(result.changes);
+    }
+    return changed;
   }
 
   insertSpeakerEvidence(evidence: SpeakerEvidence): void {

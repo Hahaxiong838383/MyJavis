@@ -11,6 +11,7 @@ import { GovernancePanel } from './components/GovernancePanel';
 import { VoiceprintPanel } from './components/VoiceprintPanel';
 import { ReminderPanel } from './components/ReminderPanel';
 import { PrivacyVaultPanel } from './components/PrivacyVaultPanel';
+import { MemoryActivityPanel } from './components/MemoryActivityPanel';
 import { usePrivacyVaultSync, useSessionContextPush } from './usePrivacyVault';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ActivationGate } from './components/ActivationGate';
@@ -137,6 +138,7 @@ function MainApp() {
         )}
 
         <SettingsPanel />
+        <MemoryActivityPanel />
         <ReminderPanel />
         <VoiceprintPanel />
         <PrivacyVaultPanel />

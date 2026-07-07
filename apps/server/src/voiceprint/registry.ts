@@ -114,6 +114,14 @@ export function findByDisplayName(tenantId: string, displayName: string): Voicep
 }
 
 /** 记忆治理的归属校验：owner 是否由该租户的某条声纹派生。 */
+/** R3：owner → tenant 反查（活动流按租户投递）。 */
+export function tenantForOwner(ownerId: string): string | undefined {
+  const row = db.prepare('SELECT tenant_id FROM voiceprint WHERE owner_id = ? LIMIT 1').get(ownerId) as
+    | { tenant_id: string }
+    | undefined;
+  return row?.tenant_id;
+}
+
 export function tenantOwnsOwner(tenantId: string, ownerId: string): boolean {
   const row = db.prepare('SELECT 1 AS x FROM voiceprint WHERE tenant_id = ? AND owner_id = ?').get(tenantId, ownerId);
   return Boolean(row);

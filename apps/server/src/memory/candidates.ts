@@ -19,9 +19,22 @@ export function extractCorrectionIntent(text: string): CorrectionIntent | null {
   return null;
 }
 
+/**
+ * 疑问句防误抽（R3 实测危害升级）："我喜欢喝什么咖啡来着"被抽成 preference 会把
+ * 真偏好顶掉（bi-temporal update 失效旧值）、"我对什么过敏"抽成 value=什么。
+ * 提问是在「查」记忆不是在「说」事实——含疑问信号的整句不抽任何候选（宁漏勿误，
+ * 真事实用户会用陈述句说）。
+ */
+const INTERROGATIVE_RE = /什么|啥|来着|吗[？?]?$|呢[？?]?$|[？?]$|怎么|哪(?:个|些|里|天)|几点|几号|多少|是不是|有没有/;
+
+export function isInterrogative(text: string): boolean {
+  return INTERROGATIVE_RE.test(text.trim());
+}
+
 export function extractMemoryCandidates(text: string, now = Date.now()): MemoryCandidate[] {
   const normalized = text.trim();
   if (!normalized || isInstructionInjection(normalized)) return [];
+  if (isInterrogative(normalized)) return [];
 
   const candidates: MemoryCandidate[] = [];
   pushIf(candidates, extractSafety(normalized));

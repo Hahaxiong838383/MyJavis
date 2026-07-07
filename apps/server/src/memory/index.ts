@@ -5,6 +5,7 @@ import { mixRecall, tokenizeQuery, warmupTokenizer, type RecallDoc } from '../me
 import { classifyPrivacy, hasSensitiveContent } from '../memory-core/privacy.js';
 import { holdPrivacyItem } from '../privacy/hold-store.js';
 import { getSessionContextForOwner, type SessionPrivacyItem } from '../privacy/session-context.js';
+import { pushActivity } from '../activity/feed.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
@@ -209,6 +210,13 @@ export class MyJavisMemory implements Memory {
     }
 
     const memories = [...preferenceSummaries, ...hot].slice(0, limit);
+    if (matchedKeywords?.length) {
+      pushActivity(q.tenantId, {
+        kind: 'recall',
+        summary: `想起 ${relevantCount ?? 0} 条相关记忆（命中：${matchedKeywords.slice(0, 4).join('、')}）`,
+        detail: { matchedKeywords, relevantCount, injected: memories.length },
+      });
+    }
     return {
       memories,
       working: q.working ?? [],
@@ -364,7 +372,23 @@ export class MyJavisMemory implements Memory {
         continue;
       }
       this.db.insertMemoryItem(item);
+      // R3 bi-temporal：update 决策 = 新事实取代旧事实——旧冲突行置 invalid（不删除，历史可溯）
+      if (decision.action === 'update' && decision.conflicts.length > 0) {
+        const invalidated = this.db.invalidateMemoryItems(decision.conflicts);
+        if (invalidated > 0) {
+          pushActivity(input.tenantId, {
+            kind: 'invalidate',
+            summary: `旧事实已更新：${invalidated} 条被新说法取代（保留历史）`,
+            detail: { type: candidate.type, count: invalidated },
+          });
+        }
+      }
       if (candidate.type === 'preference') this.recomputePrefSummary(ownerId, candidate.dimension);
+      pushActivity(input.tenantId, {
+        kind: 'write',
+        summary: `记住了（${candidate.type}）：${candidate.content.value.slice(0, 24)}`,
+        detail: { type: candidate.type, key: candidate.content.key, action: decision.action },
+      });
       lastResult = {
         eventId: event.id,
         memoryId: item.id,
@@ -402,6 +426,13 @@ export class MyJavisMemory implements Memory {
       rationale = 'privacy_dropped_no_tenant';
     }
     this.db.redactEventUtterance(eventId, `[隐私路由:${item.type}]`);
+    if (!isQuarantine && input.tenantId) {
+      pushActivity(input.tenantId, {
+        kind: 'privacy_route',
+        summary: '1 条敏感记忆已转移到你的电脑（云端不保留）',
+        detail: { type: item.type },
+      });
+    }
     this.audit({
       ownerId: item.ownerId,
       kind: 'privacy',

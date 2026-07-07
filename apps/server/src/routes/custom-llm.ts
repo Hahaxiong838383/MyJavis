@@ -201,6 +201,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
           memory
             .recall({
               ownerId: identityResolution.ownerId,
+              tenantId: tenant?.id,
               roomId: sessionId,
               query: userText,
               working: history.map((turn) => ({ role: turn.role, content: turn.content, ts: Date.now() })),

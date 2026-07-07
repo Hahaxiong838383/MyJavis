@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { extractCorrectionIntent, extractMemoryCandidates } from '../src/memory/candidates.js';
 
 assert.equal(extractMemoryCandidates('今天天气不错，出去走走').length, 0);
+// R3 疑问句防误抽：提问是查记忆不是说事实
+assert.equal(extractMemoryCandidates('我喜欢喝什么咖啡来着').length, 0);
+assert.equal(extractMemoryCandidates('我对什么过敏来着').length, 0);
+assert.equal(extractMemoryCandidates('我的航班是几点来着').length, 0);
+assert.equal(extractMemoryCandidates('你还记得我住哪里吗').length, 0);
+assert.equal(extractMemoryCandidates('我喜欢冰美式吗？').length, 0);
 assert.equal(extractMemoryCandidates('记住我喜欢冰美式')[0]?.type, 'preference');
 assert.equal(extractMemoryCandidates('以后咖啡少放糖')[0]?.type, 'preference');
 assert.equal(extractMemoryCandidates('我不喜欢拿铁')[0]?.content.key, 'preference.drink');

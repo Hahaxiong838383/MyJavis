@@ -8,9 +8,9 @@
  * bootEpoch：server 重启 counter 归零，换 epoch 保证前端字符串比较必然"变化"，不漏刷。
  */
 
-export type SyncDomain = 'voiceprint' | 'reminder' | 'privacy';
+export type SyncDomain = 'voiceprint' | 'reminder' | 'privacy' | 'memory';
 
-const DOMAINS: SyncDomain[] = ['voiceprint', 'reminder', 'privacy'];
+const DOMAINS: SyncDomain[] = ['voiceprint', 'reminder', 'privacy', 'memory'];
 
 const bootEpoch = Date.now().toString(36);
 const counters = new Map<string, number>(); // `${tenantId}:${domain}` → counter

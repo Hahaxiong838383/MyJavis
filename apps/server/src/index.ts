@@ -25,6 +25,9 @@ import { remindersRoute } from './routes/reminders.js';
 import { syncRoute } from './routes/sync.js';
 import { privacyRoute } from './routes/privacy.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
+import { MemoryRefiner } from './memory/refine.js';
+import { storage as memoryStorage } from './memory/index.js';
+import { tenantForOwner } from './voiceprint/registry.js';
 
 // 版本真源 package.json（dist 运行时向上一级找；与 App 版本同步 bump）
 const VERSION = ((): string => {
@@ -86,6 +89,7 @@ serve(
     console.log(`[server] myjavis listening on http://${info.address}:${info.port}`);
     logProviderStatus();
     startReminderScheduler();
+    new MemoryRefiner(memoryStorage, undefined, tenantForOwner).start(); // R3 批处理精修
   },
 );
 

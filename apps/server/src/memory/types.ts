@@ -101,6 +101,8 @@ export interface ContextBundle {
 
 export interface RecallQuery {
   ownerId?: string;
+  /** 租户上下文（R3：活动流事件按租户投递）。 */
+  tenantId?: string;
   query: string;
   working?: ChatWorkingTurn[];
   limit?: number;

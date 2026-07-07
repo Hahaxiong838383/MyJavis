@@ -10,7 +10,7 @@
 import { useEffect, useRef } from 'react';
 import { apiFetch } from './api';
 
-export type SyncDomain = 'voiceprint' | 'reminder' | 'privacy';
+export type SyncDomain = 'voiceprint' | 'reminder' | 'privacy' | 'memory';
 
 const POLL_MS = 5_000;
 

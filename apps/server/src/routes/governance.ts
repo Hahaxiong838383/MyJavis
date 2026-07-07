@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { memory } from '../memory/index.js';
+import { listActivity } from '../activity/feed.js';
 import { tenantOwnsOwner } from '../voiceprint/registry.js';
 import type { AppEnv } from '../tenant/context.js';
 import type { GovernanceResult } from '../memory/types.js';
@@ -16,6 +17,11 @@ governanceRoute.use('*', async (c, next) => {
   }
   const tenant = c.get('tenant');
   if (!tenant) return c.json({ ok: false, error: 'unauthorized' }, 401);
+  // tenant 级端点（无 owner 参数语义）：有租户上下文即放行
+  if (c.req.path.endsWith('/activity')) {
+    await next();
+    return;
+  }
   const body = (await c.req.json().catch(() => null)) as { ownerId?: string; targetOwnerId?: string } | null;
   const owners = [c.req.query('owner')?.trim(), body?.ownerId?.trim(), body?.targetOwnerId?.trim()].filter(
     (v): v is string => Boolean(v),
@@ -38,6 +44,14 @@ governanceRoute.get('/export', async (c) => {
   if (!ownerId) return c.json({ ok: false, error: 'owner 必填' }, 400);
   const payload = await memory.exportOwner(ownerId);
   return c.json({ ok: true, export: payload });
+});
+
+// R3 记忆活动流（川哥要求：运行机制和状态 App 实时可见）：tenant 级最近 50 条事件。
+// 放归属中间件之后但按 tenant 取（无需 owner 参数）；admin 无租户上下文时返回空。
+governanceRoute.get('/activity', (c) => {
+  const tenant = c.get('tenant');
+  if (!tenant) return c.json({ ok: true, events: [] });
+  return c.json({ ok: true, events: listActivity(tenant.id) });
 });
 
 // R1.1 召回预览（只读）：面板输入一句话 → 看会想起哪些记忆、每条为什么（命中词/来源/得分）。
