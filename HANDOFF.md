@@ -6,8 +6,9 @@
 > **仓库**:独立私有仓 `github.com/Hahaxiong838383/MyJavis`(2026-07-03 从 oh-my-ccwork subtree split 独立,commit/push 在本目录,不进 monorepo)。
 >
 > **当前版本 v0.8.2**。核心已全通:声纹注册(说"我是X,记住我的声音"零UI)+识别认人+记忆分账;多租户(邀请码 jv-xxxxx-xxxxx,每人独立声纹/记忆/人设/称呼);分发(DMG https://javis.chenchuan.cc/updates/ + 激活页 + tauri updater 自动更新,双向实证)。发版=`scripts/release-app.sh "说明"` 一条命令(自动摘 admin key+minisign 签名+上传)。
-> 拓扑:App→javis.chenchuan.cc(47.239 HK);火山回调→kidshub-ai.hahaxiong.cc/myjavis/(8.218 中转)→47.239。LLM=DeepSeek/MiniMax 赛马;判停 300ms+AIVAD+Prefill;承接句 5 桶直插。
-> ⚠️ updater 私钥 `~/.tauri/myjavis-updater.key` 丢失=无法再推更新(待备份密码管理器)。
+> 拓扑:App→javis.chenchuan.cc(47.239 HK);火山回调→kidshub-ai.hahaxiong.cc/myjavis/(8.218 中转)→47.239。LLM=DeepSeek/MiniMax 赛马;判停 **1000ms+AIVAD**+Prefill(2026-07-07 真生效——此前 .env 改了但被 pm2 运行时 env 快照压住实跑 300,已 pm2 delete 重建+save 根治,详见 memory `feedback_pm2_env_snapshot_overrides_envfile`);承接句 5 桶直插。
+> updater 私钥 `~/.tauri/myjavis-updater.key`:✅ 已双路备份(2026-07-07:macOS Keychain 条目 `myjavis-updater-key` base64 存取 + Mini `~/.tauri/` 副本 md5 一致);**待川哥手动导入 1Password 收尾**。
+> 数据备份:47.239 每日 cron 4:10 本机 7 份滚动 + ✅ **异地双拉**(2026-07-07):**主拉=Mini**(24h 常开,launchd 04:40,`scripts/backup-pull-mini.sh`→Mini `~/Backups/myjavis/db/`,服务端对 Mini key 是 restrict+固定命令 tar 只读限权——川哥批准;rrsync 因 macOS openrsync 客户端语法不兼容弃用)+ **双保险=Air**(launchd 04:40,`scripts/backup-pull.sh`→`~/.mycc-global/backups/myjavis/db/`,走全权 key,睡眠错过唤醒补跑),两侧各留 30 份、首拉 md5 三方一致。告警兜底 ✅ 已闭环(2026-07-07):Kuma push monitor(Codex 建,interval 36h)+Mini 拉取成功后 curl 心跳(URL 存 Mini `~/Backups/myjavis/kuma-push-url` 600 文件不入 git),E2E 实证 `kuma push OK`;超 36h 无心跳→飞书运维告警。
 
 ---
 

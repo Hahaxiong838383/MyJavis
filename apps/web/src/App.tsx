@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { useVoiceRtc } from './useVoiceRtc';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
+import { useReminderDelivery } from './useReminders';
 import { useAppStore } from './store';
 import { currentApiKey } from './api';
 import { PulseOrb } from './components/PulseOrb';
 import { GovernancePanel } from './components/GovernancePanel';
 import { VoiceprintPanel } from './components/VoiceprintPanel';
+import { ReminderPanel } from './components/ReminderPanel';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ActivationGate } from './components/ActivationGate';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -42,6 +44,7 @@ function MainApp() {
     useVoiceRtc();
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
   const { guardState, wake, waking, kwsStatus } = useMusicGuard({ connected, roomId, setMicMuted });
+  useReminderDelivery(); // 提醒触达档2：独立于通话的轮询（通知+念出）
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
@@ -128,6 +131,7 @@ function MainApp() {
         )}
 
         <SettingsPanel />
+        <ReminderPanel />
         <VoiceprintPanel />
         <GovernancePanel />
       </main>

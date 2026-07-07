@@ -20,21 +20,40 @@ import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index
 import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
 import {
+  backToAwaitingName,
   bumpNameRetry,
   clearEnroll,
   detectEnrollIntent,
   enrollAskNameLine,
+  enrollConfirmNameLine,
   enrollFullLine,
   enrollGuideLine,
   enrollNameRetryLine,
   enrollReplaceLine,
-  extractNameReply,
+  extractNameReplyDetailed,
   getEnroll,
+  isConfirmNo,
+  isConfirmYes,
   isEnrollCancel,
   listeningAck,
   startEnroll,
   startEnrollAwaitingName,
+  startEnrollConfirmingName,
 } from '../voiceprint/enroll-session.js';
+import {
+  clearForgetConfirm,
+  detectForgetIntent,
+  forgetAbortLine,
+  forgetConfirmLine,
+  forgetDoneLine,
+  forgetFailLine,
+  forgetNotFoundLine,
+  forgetSelfUnknownLine,
+  getForgetConfirm,
+  startForgetConfirm,
+} from '../voiceprint/forget-session.js';
+import { deleteVoicePrint } from '../voiceprint/volc-api.js';
+import { removeVoiceprint } from '../voiceprint/registry.js';
 import { detectMusicIntent } from '../music/music-intent.js';
 import { musicPlay, musicPlayById } from '../music/orchestrator-client.js';
 import { setPending } from '../music/pending-store.js';
@@ -52,6 +71,29 @@ import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
 import { getTenant } from '../tenant/registry.js';
+import {
+  askBothLine,
+  askContentLine,
+  askTimeLine,
+  bumpRetry,
+  cancelEmptyLine,
+  cancelOkLine,
+  clearReminderSession,
+  contentRetryLine,
+  detectReminderIntent,
+  fmtDue,
+  getReminderSession,
+  giveUpLine,
+  isReminderCancelWord,
+  makeupNote,
+  parseAwaitedContent,
+  parseAwaitedTime,
+  queryEmptyLine,
+  setOkLine,
+  startAwaiting,
+  timeRetryLine,
+} from '../reminder/intent.js';
+import { reminderStore } from '../reminder/store.js';
 import type { ChatTurn } from '../providers/types.js';
 import type { VolcSpeakerPayload } from '../memory/types.js';
 
@@ -192,6 +234,13 @@ customLlmRoute.post('/chat/completions', async (c) => {
     : tenant?.userTitle
       ? `对方是这台设备的主人，日常请自然地称呼 TA「${tenant.userTitle}」（比如打招呼、确认、结尾时带上称呼，别每句都用）。不要提"系统/设置"这类机制词。`
       : undefined;
+  // 错过补报（触达档3收口）：该租户有 missed 提醒 → contextNote 让 Javis 本轮自然带出；
+  // 送达标记延迟到流正常完成（onDone 且未被火山 abort），interim/barge-in 弃用轮不消耗补报。
+  const missedReminders = tenant ? reminderStore().missedForTenant(tenant.id) : [];
+  const makeupNoteText = missedReminders.length
+    ? makeupNote(missedReminders.map((r) => ({ display: fmtDue(r.dueAt), content: r.content })))
+    : undefined;
+  const contextNoteText = [speakerNote, makeupNoteText].filter(Boolean).join('\n\n') || undefined;
   const systemPrompt =
     overridePrompt ??
     (await turnTrace.measure('promptAssemblyMs', () =>
@@ -220,6 +269,21 @@ customLlmRoute.post('/chat/completions', async (c) => {
   if (enrollCanned) {
     console.log(`[custom-llm] enroll session=${sessionId ?? '-'} canned="${enrollCanned.slice(0, 24)}…"`);
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: enrollCanned });
+  }
+
+  const forgetCanned = await resolveForgetCanned(sessionId, userText, tenant?.id, speakerName);
+  if (forgetCanned) {
+    console.log(`[custom-llm] forget session=${sessionId ?? '-'} canned="${forgetCanned.slice(0, 24)}…"`);
+    return streamCannedReply(c, { model: body.model ?? 'myjavis', text: forgetCanned });
+  }
+
+  const reminderCanned = resolveReminderCanned(sessionId, userText, tenant?.id, {
+    ownerId: identityResolution.ownerId,
+    speakerName,
+  });
+  if (reminderCanned) {
+    console.log(`[custom-llm] reminder session=${sessionId ?? '-'} canned="${reminderCanned.slice(0, 30)}…"`);
+    return streamCannedReply(c, { model: body.model ?? 'myjavis', text: reminderCanned });
   }
 
   const musicCanned = await resolveMusicCanned(sessionId, userText);
@@ -271,7 +335,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
         systemPrompt,
         userText,
         history,
-        contextNote: speakerNote,
+        contextNote: contextNoteText,
         onDelta: (delta) => {
           if (!firstTokenSeen) {
             firstTokenSeen = true;
@@ -314,6 +378,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
               utteranceText: assistantText.trim(),
               heardByUser: true,
             });
+          }
+          if (!discarded && missedReminders.length) {
+            // 补报已随本轮回复带出（火山未弃播）→ 消耗掉，防每轮重复念
+            for (const r of missedReminders) reminderStore().markDelivered(r.id, 'makeup');
+            console.log(`[reminder] ${missedReminders.length} missed reminder(s) delivered via makeup`);
           }
           if (discarded) console.log(`[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`);
           enqueue(chunk({}, 'stop'));
@@ -363,11 +432,36 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string, tenan
       clearEnroll(roomId);
       return '好，那先不记了，想记的时候随时说。';
     }
-    const name = extractNameReply(userText);
-    if (name) return beginNamed(name);
+    const reply = extractNameReplyDetailed(userText);
+    // 带"我叫"前缀的名字句式明确直接开录；裸名字（真机"唱歌"误注册事故形态）先复述确认（S1）
+    if (reply && !reply.bare) return beginNamed(reply.name);
+    if (reply?.bare) {
+      startEnrollConfirmingName(roomId, reply.name);
+      return enrollConfirmNameLine(reply.name);
+    }
     if (bumpNameRetry(roomId)) return enrollNameRetryLine();
     clearEnroll(roomId);
     return '那咱们先聊着，想记声音的时候说"我叫某某，记住我的声音"就行。';
+  }
+
+  if (session?.state === 'confirming_name') {
+    if (isEnrollCancel(userText)) {
+      clearEnroll(roomId);
+      return '好，那先不记了。';
+    }
+    if (isConfirmYes(userText)) return beginNamed(session.displayName);
+    if (isConfirmNo(userText)) {
+      // "不对，我叫川哥"一句话里带了纠正名 → 直接换名（带前缀才收）
+      const corrected = extractNameReplyDetailed(userText.replace(/^[^，。,]{0,4}[，。,]\s*/, ''));
+      if (corrected && !corrected.bare) return beginNamed(corrected.name);
+      backToAwaitingName(roomId);
+      return enrollNameRetryLine();
+    }
+    const reply = extractNameReplyDetailed(userText);
+    if (reply && !reply.bare) return beginNamed(reply.name); // 直接改口"我叫XX"
+    if (bumpNameRetry(roomId)) return enrollConfirmNameLine(session.displayName);
+    clearEnroll(roomId);
+    return '那咱们先聊着，想记声音的时候再说。';
   }
 
   if (intent?.kind === 'unnamed') {
@@ -387,6 +481,169 @@ function resolveEnrollCanned(roomId: string | undefined, userText: string, tenan
     return listeningAck();
   }
   return null;
+}
+
+/**
+ * S2 语音删除声纹裁决（async：确认后真调火山删除）。
+ * 注册流程进行中不响应（enroll session 活跃时让位，防两个状态机抢同一句"对"）；
+ * 删除不可逆 → 必二次确认；确认执行的 interim/final 双触发由 clearForgetConfirm 幂等兜住。
+ */
+async function resolveForgetCanned(
+  roomId: string | undefined,
+  userText: string,
+  tenantId: string | undefined,
+  speakerName: string | undefined,
+): Promise<string | null> {
+  if (!roomId || !userText.trim() || !tenantId) return null;
+  if (getEnroll(roomId)) return null;
+
+  const intent = detectForgetIntent(userText);
+  if (intent) {
+    const existing = listActiveVoiceprints(tenantId);
+    const targetName = intent.target === 'SELF' ? speakerName : intent.target;
+    if (!targetName) return forgetSelfUnknownLine(existing.map((r) => r.displayName));
+    const rec = findByDisplayName(tenantId, targetName);
+    if (!rec) return forgetNotFoundLine(targetName, existing.map((r) => r.displayName));
+    startForgetConfirm(roomId, rec.voiceprintId, rec.displayName);
+    return forgetConfirmLine(rec.displayName);
+  }
+
+  const confirm = getForgetConfirm(roomId);
+  if (!confirm) return null;
+  if (isConfirmYes(userText)) {
+    clearForgetConfirm(roomId);
+    try {
+      await deleteVoicePrint(confirm.voiceprintId);
+    } catch (err) {
+      console.log(`[voiceprint] forget volc delete failed id=${confirm.voiceprintId}: ${(err as Error).message.slice(0, 80)}`);
+      return forgetFailLine();
+    }
+    removeVoiceprint(confirm.voiceprintId);
+    console.log(`[voiceprint] forgotten via voice id=${confirm.voiceprintId} name=${confirm.displayName}`);
+    return forgetDoneLine(confirm.displayName);
+  }
+  if (isConfirmNo(userText) || isEnrollCancel(userText)) {
+    clearForgetConfirm(roomId);
+    return forgetAbortLine();
+  }
+  return null; // 答非所问：confirm 留到 TTL，本句走正常链路
+}
+
+/**
+ * reminder 创建去抖（同 schedulePlayCommit 范式）：Prefill interim 半句「提醒我三点开」
+ * 与 final「提醒我三点开会」都会命中意图——创建延迟 800ms 提交，同房间新 set 覆盖旧的，
+ * 最后一个（final）赢。复述话术即时直出（interim 版被火山 abort 不播，final 版播）。
+ */
+const reminderCommitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function scheduleReminderCommit(
+  roomId: string,
+  args: { tenantId: string; content: string; dueAt: number; ownerId?: string; speakerName?: string },
+): void {
+  const old = reminderCommitTimers.get(roomId);
+  if (old) clearTimeout(old);
+  reminderCommitTimers.set(
+    roomId,
+    setTimeout(() => {
+      reminderCommitTimers.delete(roomId);
+      const r = reminderStore().create({ ...args, roomId });
+      console.log(`[reminder] created id=${r.id} due=${fmtDue(r.dueAt)} "${r.content.slice(0, 24)}" tenant=${args.tenantId}`);
+    }, 800),
+  );
+}
+
+/** cancel 去抖（interim+final 双触发会连删两条）：同房间 1.5s 窗口只执行一次。 */
+const lastCancelAt = new Map<string, number>();
+
+/**
+ * reminder 意图短路裁决（无命中返回 null → 走后续链路）。
+ * 优先级：新意图（cancel/query/set）> 反问会话接续（awaiting_time/awaiting_content）。
+ * 新 set 意图永远能重开流程（用户换个说法重新说全）；设置成功 = 复述确认（可语音取消）。
+ */
+function resolveReminderCanned(
+  roomId: string | undefined,
+  userText: string,
+  tenantId: string | undefined,
+  speaker: { ownerId?: string; speakerName?: string },
+): string | null {
+  if (!roomId || !userText.trim() || !tenantId) return null;
+
+  const commitSet = (content: string, dueAt: number, display: string): string => {
+    clearReminderSession(roomId);
+    scheduleReminderCommit(roomId, {
+      tenantId,
+      content,
+      dueAt,
+      ownerId: speaker.ownerId,
+      speakerName: speaker.speakerName,
+    });
+    return setOkLine(display, content);
+  };
+
+  const intent = detectReminderIntent(userText);
+  if (intent?.kind === 'cancel') {
+    clearReminderSession(roomId);
+    const last = lastCancelAt.get(roomId) ?? 0;
+    if (Date.now() - last < 1500) return null; // interim 已处理过，final 版静默走开（话术已播）
+    lastCancelAt.set(roomId, Date.now());
+    // 若有未提交的创建（800ms 窗口内"设了马上取消"）：撤销提交即可
+    const pendingCommit = reminderCommitTimers.get(roomId);
+    if (pendingCommit) {
+      clearTimeout(pendingCommit);
+      reminderCommitTimers.delete(roomId);
+      return '好，那条提醒不设了。';
+    }
+    const cancelled = reminderStore().cancelLatest(tenantId);
+    return cancelled ? cancelOkLine(cancelled.content, fmtDue(cancelled.dueAt)) : cancelEmptyLine();
+  }
+
+  if (intent?.kind === 'query') {
+    const items = reminderStore().upcomingForTenant(tenantId, 5);
+    if (!items.length) return queryEmptyLine();
+    const list = items.map((r, i) => `${i + 1}、${fmtDue(r.dueAt)}${r.content.length > 20 ? `${r.content.slice(0, 20)}…` : r.content}`).join('；');
+    return `你有 ${items.length} 条提醒：${list}。`;
+  }
+
+  if (intent?.kind === 'set') {
+    const { content, time, dateOffset } = intent;
+    if (time && content) return commitSet(content, time.dueAt, time.display);
+    if (time && !content) {
+      startAwaiting(roomId, { state: 'awaiting_content', dueAt: time.dueAt, display: time.display });
+      return askContentLine(time.display);
+    }
+    if (!time && content) {
+      startAwaiting(roomId, { state: 'awaiting_time', content, dateOffset: dateOffset ?? 0 });
+      return askTimeLine(content);
+    }
+    startAwaiting(roomId, { state: 'awaiting_time', dateOffset: dateOffset ?? 0 });
+    return askBothLine();
+  }
+
+  const session = getReminderSession(roomId);
+  if (!session) return null;
+
+  if (isReminderCancelWord(userText)) {
+    clearReminderSession(roomId);
+    return giveUpLine();
+  }
+
+  if (session.state === 'awaiting_time') {
+    const parsed = parseAwaitedTime(userText, session);
+    if (parsed) {
+      if (session.content) return commitSet(session.content, parsed.dueAt, parsed.display);
+      startAwaiting(roomId, { state: 'awaiting_content', dueAt: parsed.dueAt, display: parsed.display });
+      return askContentLine(parsed.display);
+    }
+    if (bumpRetry(roomId)) return timeRetryLine();
+    clearReminderSession(roomId);
+    return giveUpLine();
+  }
+
+  // awaiting_content
+  const content = parseAwaitedContent(userText);
+  if (content && session.dueAt) return commitSet(content, session.dueAt, session.display ?? fmtDue(session.dueAt));
+  if (bumpRetry(roomId)) return contentRetryLine();
+  clearReminderSession(roomId);
+  return giveUpLine();
 }
 
 /**

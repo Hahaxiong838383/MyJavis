@@ -1,6 +1,6 @@
 [package]
 name = "myjavis"
-version = "0.10.0"
+version = "0.11.0"
 description = "MyJavis macOS Tauri shell"
 authors = ["MyJavis"]
 edition = "2021"
@@ -21,6 +21,7 @@ serde_json = "1"
 time = "=0.3.44"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-notification = "2.3.3"
 # 贾维斯唤醒词（共存步3）：sherpa-onnx 官方 Rust API（static 静态链接打进 .app）+ cpal 采麦
 sherpa-onnx = { version = "1.13.3", default-features = false, features = ["static"] }
 cpal = "0.16"

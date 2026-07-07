@@ -5,6 +5,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(kws::KwsManager::default())
         .invoke_handler(tauri::generate_handler![kws::kws_start, kws::kws_stop, kws::kws_feed])
         .run(tauri::generate_context!())

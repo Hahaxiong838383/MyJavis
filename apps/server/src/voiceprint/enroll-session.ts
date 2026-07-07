@@ -9,7 +9,7 @@
  * 状态存内存（单进程 pm2，重启丢失=用户再说一遍，可接受）。
  */
 
-export type EnrollState = 'awaiting_name' | 'recording' | 'done' | 'failed';
+export type EnrollState = 'awaiting_name' | 'confirming_name' | 'recording' | 'done' | 'failed';
 
 export interface EnrollSession {
   roomId: string;
@@ -63,7 +63,13 @@ export function detectEnrollIntent(text: string): EnrollIntent | null {
  */
 const NAME_CHITCHAT = /随便|哈哈|呵呵|嘿嘿|没有|知道|你好|谢谢|再见|拜拜|等等|好的|好啊|好呀|可以|是的|什么|不|别/;
 
-export function extractNameReply(text: string): string | null {
+export interface NameReply {
+  name: string;
+  /** 裸名字（无"我叫"前缀）——误把闲聊当名字的高危形态（真机"唱歌"事故），须复述确认。 */
+  bare: boolean;
+}
+
+export function extractNameReplyDetailed(text: string): NameReply | null {
   const normalized = text
     .trim()
     .replace(/[。.!！?？~\s]+$/, '')
@@ -72,11 +78,26 @@ export function extractNameReply(text: string): string | null {
   if (!normalized || normalized.length > 24) return null;
   if (/谁|不知道|不告诉|为什么|干嘛|什么意思/.test(normalized)) return null;
   const m = /^(?:我是|我叫|叫我|就叫)\s*(?!不是|就是|也是)([一-龥A-Za-z0-9·]{1,8})$/.exec(normalized);
-  if (m?.[1]) return m[1];
+  if (m?.[1]) return { name: m[1], bare: false };
   // 裸名字（无"我叫"前缀）：中文 ≤4 字 / 英文 ≤12 字符，拒口头禅与含否定字的闲聊（"就不说"）
   const bare = /^[一-龥]{1,4}$|^[A-Za-z][A-Za-z0-9·]{0,11}$/.test(normalized);
-  if (bare && !NAME_CHITCHAT.test(normalized)) return normalized;
+  if (bare && !NAME_CHITCHAT.test(normalized)) return { name: normalized, bare: true };
   return null;
+}
+
+/** 兼容旧签名（既有测试/调用方）。 */
+export function extractNameReply(text: string): string | null {
+  return extractNameReplyDetailed(text)?.name ?? null;
+}
+
+/** confirming 场景通用的确认/否认（宁漏勿误：不确定就当没回答，交调用方重试/放行）。 */
+export function isConfirmYes(text: string): boolean {
+  const t = text.trim().replace(/[。.!！~啊呀呢嘛哦哇吧的\s]+$/, '');
+  return /^(?:对|对对|是|是滴|没错|嗯|嗯嗯|好|确定|正确|可以|要得|删|删掉|忘|忘掉)$/.test(t);
+}
+export function isConfirmNo(text: string): boolean {
+  const t = text.trim();
+  return /^(?:不对|不是|错了|不|没有|别|不叫这个|等等)/.test(t);
 }
 
 /** 建/更新注册会话（幂等：Prefill interim 先触发、final 再触发时以 final 的名字为准）。 */
@@ -111,6 +132,35 @@ export function startEnrollAwaitingName(roomId: string): EnrollSession {
   };
   sessions.set(roomId, session);
   return session;
+}
+
+/**
+ * S1 名字确认（2026-07-07，真机"唱歌"误注册教训）：awaiting_name 阶段听到的**裸名字**
+ * （无"我叫"前缀）先复述确认再开录——闲聊词被当名字会白占 3 人名额。
+ * displayName 暂存待确认名；确认后调用方走 startEnroll 转 recording。
+ */
+export function startEnrollConfirmingName(roomId: string, pendingName: string): EnrollSession {
+  const now = Date.now();
+  const session: EnrollSession = {
+    roomId,
+    displayName: pendingName,
+    state: 'confirming_name',
+    attempt: 0,
+    nameRetries: getEnroll(roomId)?.nameRetries ?? 0,
+    createdAt: now,
+    expiresAt: now + SESSION_TTL_MS,
+  };
+  sessions.set(roomId, session);
+  return session;
+}
+
+/** confirming_name 否认 → 回 awaiting_name 重问（沿用重试计数，防无限循环）。 */
+export function backToAwaitingName(roomId: string): void {
+  const s = sessions.get(roomId);
+  if (!s) return;
+  s.state = 'awaiting_name';
+  s.displayName = '';
+  s.expiresAt = Date.now() + SESSION_TTL_MS;
 }
 
 /** awaiting_name 追问一次；超限返回 false（调用方 clear + 放弃话术）。 */
@@ -189,9 +239,17 @@ export function enrollNameRetryLine(): string {
   return `没听清名字，你就说"我叫某某"，或者直接说名字就行。`;
 }
 
-/** 已满 3 人的拒绝话术。 */
+/** 已满 3 人的拒绝话术（S3：给出可执行的语音路径，与"忘掉X的声音"意图联动）。 */
 export function enrollFullLine(existingNames: string[]): string {
-  return `我最多只能记住三个人的声音，现在已经记了${existingNames.join('、')}。想换人的话，要先让我忘掉一位哦。`;
+  return (
+    `我最多只能记住三个人的声音，现在已经记了${existingNames.join('、')}。` +
+    `想换人的话，先说"忘掉某某的声音"，我腾出位置再记你。`
+  );
+}
+
+/** S1 裸名字复述确认话术。 */
+export function enrollConfirmNameLine(pendingName: string): string {
+  return `我听到的名字是「${pendingName}」，对吗？对的话我就开始记你的声音。`;
 }
 
 /** 同名重注册的引导语。 */

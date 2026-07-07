@@ -73,6 +73,16 @@ const agentSessions = new Map<
   { userId: string; tenantId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number }
 >();
 
+/** 该租户当前在册的房间（reminder 调度器档1路由用）。房间在册≠任务活着（音乐守护
+ *  save 模式任务已停），调用方对 ExternalTextToSpeech 失败必须降级处理。 */
+export function listAgentRooms(tenantId: string): string[] {
+  const rooms: string[] = [];
+  for (const [roomId, sess] of agentSessions) {
+    if (sess.tenantId === tenantId) rooms.push(roomId);
+  }
+  return rooms;
+}
+
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
 function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOptions): Record<string, unknown> {
   const voicePrint =
