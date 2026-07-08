@@ -55,6 +55,8 @@ governanceRoute.get('/activity', (c) => {
 });
 
 // R3.5 owners 列表（面板"owner 点选"）：solo 默认 owner（恒在首位）+ 该租户声纹表全部 owner。
+// 单人模式下声纹 owner 永远 0 条记忆（记忆全归 solo owner）——0 记忆的声纹条目不返回，
+// 否则同一个人在面板出现两个名字（川哥实测困惑 2026-07-08）。家庭模式历史记忆（>0）仍显示。
 governanceRoute.get('/owners', (c) => {
   const tenant = c.get('tenant');
   if (!tenant) return c.json({ ok: true, owners: [] });
@@ -64,12 +66,14 @@ governanceRoute.get('/owners', (c) => {
     source: 'solo' as const,
     memoryCount: storage.countMemoriesByOwner(soloOwnerId(tenant.id)),
   };
-  const voiceprintOwners = listActiveVoiceprints(tenant.id).map((vp) => ({
-    ownerId: vp.ownerId,
-    displayName: vp.displayName,
-    source: 'voiceprint' as const,
-    memoryCount: storage.countMemoriesByOwner(vp.ownerId),
-  }));
+  const voiceprintOwners = listActiveVoiceprints(tenant.id)
+    .map((vp) => ({
+      ownerId: vp.ownerId,
+      displayName: vp.displayName,
+      source: 'voiceprint' as const,
+      memoryCount: storage.countMemoriesByOwner(vp.ownerId),
+    }))
+    .filter((o) => !tenant.soloMode || o.memoryCount > 0);
   return c.json({ ok: true, owners: [solo, ...voiceprintOwners] });
 });
 

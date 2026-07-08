@@ -31,6 +31,8 @@ import {
 } from '../voiceprint/enroll-session.js';
 import { speakText } from '../providers/rtc-control.js';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
+import { updateTenantConfig } from '../tenant/registry.js';
+import { bumpSyncVersion } from '../sync/versions.js';
 import type { Tenant } from '../tenant/registry.js';
 import type { Context } from 'hono';
 
@@ -143,6 +145,13 @@ voiceprintRoute.post('/register', async (c) => {
         console.log(`[voiceprint] 成功播报失败（不阻塞）：${(err as Error).message}`),
       );
     }
+    // 单人模式：注册声纹 = 告诉 Javis「我是谁」→ 默认称呼跟着统一（欢迎词/未识别兜底/设置面板
+    // 三处一致，川哥实测两名并存困惑 2026-07-08）。家庭模式不同步（多人各有名字，userTitle 独立）。
+    if (tenant.soloMode && tenant.userTitle !== displayName) {
+      updateTenantConfig(tenant.id, { userTitle: displayName });
+      bumpSyncVersion(tenant.id, 'memory');
+      console.log(`[voiceprint] solo 称呼统一 userTitle "${tenant.userTitle}" → "${displayName}"`);
+    }
     return c.json({ ok: true, voiceprint: record, replaced: sameName?.voiceprintId });
   } catch (err) {
     console.log(`[voiceprint] register failed: ${(err as Error).message}`);
@@ -194,6 +203,12 @@ voiceprintRoute.post('/rename', async (c) => {
   updateVoicePrint({ voicePrintId: voiceprintId, metaInfo: `MyJavis ${displayName}` }).catch((err) =>
     console.log(`[voiceprint] MetaInfo 同步失败（不阻塞）：${(err as Error).message}`),
   );
+  // 单人模式改声纹名 = 改「我是谁」→ 默认称呼同步（与 /register 的统一语义一致）
+  if (tenant.soloMode && tenant.userTitle !== displayName) {
+    updateTenantConfig(tenant.id, { userTitle: displayName });
+    bumpSyncVersion(tenant.id, 'memory');
+    console.log(`[voiceprint] solo 称呼统一 userTitle "${tenant.userTitle}" → "${displayName}"`);
+  }
   console.log(`[voiceprint] renamed id=${voiceprintId} → "${displayName}"`);
   return c.json({ ok: true, voiceprint: record });
 });
