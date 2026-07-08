@@ -235,6 +235,7 @@ export class MyJavisMemory implements Memory {
         ? this.db.getEvent(input.eventId)!
         : this.events.appendUtterance({
             roomId: input.roomId,
+            tenantId: input.tenantId,
             speakerEvidenceId: input.identity?.evidence.id,
             isFinal: input.isFinal,
             sourceRole: input.sourceRole,
@@ -245,7 +246,8 @@ export class MyJavisMemory implements Memory {
     if (!input.isFinal) return { eventId: event.id, status: 'skipped', reason: 'not_final' };
     if (input.sourceRole !== 'user') return { eventId: event.id, status: 'skipped', reason: 'source_role_not_user' };
 
-    const identityStable = input.identity?.state === 'active_stable' && Boolean(input.ownerId);
+    // R3.5 单人模式：soloStable=true 时绕过声纹稳定性门槛（声纹证据链本身不动，identity 层保持纯净）。
+    const identityStable = input.soloStable === true || (input.identity?.state === 'active_stable' && Boolean(input.ownerId));
     const unsafe = isInstructionInjection(input.utterance);
     const ownerId = identityStable && input.ownerId ? input.ownerId : 'unattributed';
 
@@ -306,6 +308,11 @@ export class MyJavisMemory implements Memory {
         status: 'quarantine',
         confidence: input.identity?.evidence.confidence ?? 0,
         reason: input.identity?.reason ?? 'identity_unstable',
+      });
+      // R3.5 引导闭环：家庭模式下声纹未识别导致暂存，活动面板可见（零内容，只说明发生了什么）。
+      pushActivity(input.tenantId, {
+        kind: 'quarantine',
+        summary: '有一句话暂存了（还没认出说话人，注册声纹后我才能记住）',
       });
       const routed = this.routePrivacy(item, input, event.id, true);
       if (routed) return routed;

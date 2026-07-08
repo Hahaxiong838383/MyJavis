@@ -1,7 +1,7 @@
 {
   "name": "@myjavis/server",
   "private": true,
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
@@ -25,7 +25,8 @@
     "migrate:memory": "tsx scripts/migrate-memory.ts",
     "test:voiceprint": "tsx scripts/voiceprint.test.ts",
     "test:reminder": "tsx scripts/reminder.test.ts",
-    "test:voiceprint-s123": "tsx scripts/voiceprint-s123.test.ts"
+    "test:voiceprint-s123": "tsx scripts/voiceprint-s123.test.ts",
+    "test:solo-mode": "tsx scripts/solo-mode.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

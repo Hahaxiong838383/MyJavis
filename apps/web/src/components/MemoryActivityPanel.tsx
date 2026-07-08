@@ -11,7 +11,7 @@ import { useSyncRefresh } from '../useSyncVersions';
 
 interface ActivityEventDto {
   ts: number;
-  kind: 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction';
+  kind: 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction' | 'quarantine';
   summary: string;
   detail?: Record<string, unknown>;
 }
@@ -23,6 +23,7 @@ const KIND_META: Record<ActivityEventDto['kind'], { icon: string; label: string;
   invalidate: { icon: '♻️', label: '更新', color: '#94a3b8' },
   refine: { icon: '🧠', label: '精修', color: '#c4b5fd' },
   correction: { icon: '✍️', label: '纠正', color: '#f9a8d4' },
+  quarantine: { icon: '📥', label: '暂存', color: '#fbbf24' },
 };
 
 function timeLabel(ts: number): string {

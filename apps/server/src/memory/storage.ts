@@ -13,6 +13,8 @@ import type {
 export interface EventLogRecord {
   id: string;
   roomId: string;
+  /** R3.5 面板产品化：租户归属（容错迁移列，老行为 undefined，见 ensureEventLogTenantColumn）。 */
+  tenantId?: string;
   asrSegmentId: string;
   speakerEvidenceId?: string;
   isFinal: boolean;
@@ -181,6 +183,7 @@ export class SQLiteMemoryStorage {
     `);
     this.ensureSuspendedColumn();
     this.ensureBiTemporalColumns();
+    this.ensureEventLogTenantColumn();
     this.db.exec(`
       DROP VIEW IF EXISTS hot_readable_memories;
       CREATE VIEW hot_readable_memories AS
@@ -219,6 +222,20 @@ export class SQLiteMemoryStorage {
         if (!/duplicate column name/i.test(message)) throw err;
       }
     }
+  }
+
+  /**
+   * R3.5 面板产品化（对话历史面板）：event_log 加 tenant_id 列（容错迁移，老行 NULL 不返回，
+   * 见 listEventsByTenant 的 "只对升级后的新对话生效" 契约）。
+   */
+  private ensureEventLogTenantColumn(): void {
+    try {
+      this.db.exec(`ALTER TABLE event_log ADD COLUMN tenant_id TEXT;`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name/i.test(message)) throw err;
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_event_log_tenant ON event_log(tenant_id, created_at);`);
   }
 
   /** R3 精修器扫描入口：有活跃记忆的 owner 列表。 */
@@ -287,14 +304,15 @@ export class SQLiteMemoryStorage {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO event_log
-          (id, room_id, asr_segment_id, speaker_evidence_id, is_final, source_role, utterance_text,
+          (id, room_id, tenant_id, asr_segment_id, speaker_evidence_id, is_final, source_role, utterance_text,
            utterance_start_ts, utterance_end_ts, llm_response_id, tts_playback_start_ts,
            tts_playback_end_ts, interrupted_at, heard_by_user, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
         record.roomId,
+        record.tenantId ?? null,
         record.asrSegmentId,
         record.speakerEvidenceId ?? null,
         record.isFinal ? 1 : 0,
@@ -322,24 +340,18 @@ export class SQLiteMemoryStorage {
 
   getEvent(id: string): EventLogRecord | undefined {
     const row = this.db.prepare(`SELECT * FROM event_log WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
-    if (!row) return undefined;
-    return {
-      id: String(row.id),
-      roomId: String(row.room_id),
-      asrSegmentId: String(row.asr_segment_id),
-      speakerEvidenceId: nullableString(row.speaker_evidence_id),
-      isFinal: Number(row.is_final) === 1,
-      sourceRole: row.source_role as SourceRole,
-      utteranceText: String(row.utterance_text),
-      utteranceStartTs: Number(row.utterance_start_ts),
-      utteranceEndTs: Number(row.utterance_end_ts),
-      llmResponseId: nullableString(row.llm_response_id),
-      ttsPlaybackStartTs: nullableNumber(row.tts_playback_start_ts),
-      ttsPlaybackEndTs: nullableNumber(row.tts_playback_end_ts),
-      interruptedAt: nullableNumber(row.interrupted_at),
-      heardByUser: row.heard_by_user === null ? undefined : Number(row.heard_by_user) === 1,
-      createdAt: Number(row.created_at),
-    };
+    return row ? rowToEventLogRecord(row) : undefined;
+  }
+
+  /**
+   * R3.5 对话历史面板：按租户取最近对话（tenant_id 迁移前的老行为 NULL，契约上
+   * "只对升级后的新对话生效"——老行不返回，见 governance.ts /conversations 注释）。
+   */
+  listEventsByTenant(tenantId: string, limit = 50): EventLogRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM event_log WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?`)
+      .all(tenantId, limit) as Array<Record<string, unknown>>;
+    return rows.map(rowToEventLogRecord);
   }
 
   insertMemoryItem(item: MemoryItem): void {
@@ -562,6 +574,12 @@ export class SQLiteMemoryStorage {
     return rows.map(rowToMemoryItem);
   }
 
+  /** R3.5 owners 列表面板：该 owner 当前可见（hot）记忆条数，用于 chips 上的计数徽标。 */
+  countMemoriesByOwner(ownerId: string): number {
+    const row = this.db.prepare(`SELECT COUNT(*) as n FROM hot_readable_memories WHERE owner_id = ?`).get(ownerId) as { n: number };
+    return Number(row.n);
+  }
+
   listMemoriesByStatus(status: MemoryStatus): MemoryItem[] {
     const rows = this.db.prepare(`SELECT * FROM memory_item WHERE status = ? ORDER BY created_at`).all(status) as unknown as MemoryRow[];
     return rows.map(rowToMemoryItem);
@@ -571,6 +589,27 @@ export class SQLiteMemoryStorage {
     const row = this.db.prepare(`SELECT COUNT(*) as n FROM ${table}`).get() as { n: number };
     return Number(row.n);
   }
+}
+
+function rowToEventLogRecord(row: Record<string, unknown>): EventLogRecord {
+  return {
+    id: String(row.id),
+    roomId: String(row.room_id),
+    tenantId: nullableString(row.tenant_id),
+    asrSegmentId: String(row.asr_segment_id),
+    speakerEvidenceId: nullableString(row.speaker_evidence_id),
+    isFinal: Number(row.is_final) === 1,
+    sourceRole: row.source_role as SourceRole,
+    utteranceText: String(row.utterance_text),
+    utteranceStartTs: Number(row.utterance_start_ts),
+    utteranceEndTs: Number(row.utterance_end_ts),
+    llmResponseId: nullableString(row.llm_response_id),
+    ttsPlaybackStartTs: nullableNumber(row.tts_playback_start_ts),
+    ttsPlaybackEndTs: nullableNumber(row.tts_playback_end_ts),
+    interruptedAt: nullableNumber(row.interrupted_at),
+    heardByUser: row.heard_by_user === null ? undefined : Number(row.heard_by_user) === 1,
+    createdAt: Number(row.created_at),
+  };
 }
 
 function rowToMemoryItem(row: MemoryRow): MemoryItem {

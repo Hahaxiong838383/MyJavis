@@ -129,6 +129,8 @@ export interface RememberInput {
   ts?: number;
   recentMemoryIds?: string[];
   targetOwnerId?: string;
+  /** R3.5 单人模式：租户 solo=true 时调用方传 true，绕过声纹稳定性门槛（见 memory/index.ts remember()）。 */
+  soloStable?: boolean;
 }
 
 export interface RememberResult {

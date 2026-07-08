@@ -12,6 +12,7 @@ export function SettingsPanel() {
   const [autostart, setAutostart] = useState<boolean | null>(null); // null=不可用(浏览器)
   const [userTitle, setUserTitle] = useState('');
   const [personaExtra, setPersonaExtra] = useState('');
+  const [soloMode, setSoloMode] = useState(true);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -39,12 +40,13 @@ export function SettingsPanel() {
       try {
         const data = (await apiFetch('/api/me/config').then((r) => r.json())) as {
           ok: boolean;
-          me?: { name: string; personaExtra: string; userTitle: string };
+          me?: { name: string; personaExtra: string; userTitle: string; soloMode: boolean };
         };
         if (data.ok && data.me) {
           setName(data.me.name);
           setUserTitle(data.me.userTitle);
           setPersonaExtra(data.me.personaExtra);
+          setSoloMode(data.me.soloMode);
         }
       } catch {
         setMessage('配置加载失败');
@@ -58,7 +60,7 @@ export function SettingsPanel() {
       const res = await apiFetch('/api/me/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ personaExtra, userTitle }),
+        body: JSON.stringify({ personaExtra, userTitle, soloMode }),
       });
       const data = (await res.json()) as { ok: boolean; error?: string };
       if (!res.ok || !data.ok) throw new Error(data.error || '保存失败');
@@ -98,6 +100,12 @@ export function SettingsPanel() {
         />
         <span style={styles.hint}>注册过声纹的人被听出来时，优先用「声纹管理」里那个名字——想统一就把两处都改成一样的。</span>
       </label>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 13, color: '#cbd5e1', cursor: 'pointer' }}>
+        <input type="checkbox" checked={soloMode} onChange={(e) => setSoloMode(e.target.checked)} />
+        单人模式（默认开）：所有对话记忆归这个邀请码本人
+      </label>
+      <span style={styles.hint}>家里多人共用才需要关闭并各自注册声纹；关闭后未识别声纹的人说的话会暂存不记住，直到注册。</span>
 
       <label style={styles.label}>
         个性化人设（语气 / 背景 / 偏好，叠加在 Javis 基础人设上）

@@ -113,9 +113,16 @@ export function findByDisplayName(tenantId: string, displayName: string): Voicep
   return row ? rowToRecord(row) : undefined;
 }
 
-/** 记忆治理的归属校验：owner 是否由该租户的某条声纹派生。 */
+/** R3.5 单人模式：租户默认 owner id（无论声纹是否识别，全部记忆归此）。 */
+export function soloOwnerId(tenantId: string): string {
+  return `owner_tenant_${tenantId}`;
+}
+
+/** 记忆治理的归属校验：owner 是否由该租户的某条声纹派生，或是该租户的单人模式默认 owner。 */
 /** R3：owner → tenant 反查（活动流按租户投递）。 */
 export function tenantForOwner(ownerId: string): string | undefined {
+  const soloMatch = /^owner_tenant_(.+)$/.exec(ownerId);
+  if (soloMatch) return soloMatch[1];
   const row = db.prepare('SELECT tenant_id FROM voiceprint WHERE owner_id = ? LIMIT 1').get(ownerId) as
     | { tenant_id: string }
     | undefined;
@@ -123,6 +130,7 @@ export function tenantForOwner(ownerId: string): string | undefined {
 }
 
 export function tenantOwnsOwner(tenantId: string, ownerId: string): boolean {
+  if (ownerId === soloOwnerId(tenantId)) return true;
   const row = db.prepare('SELECT 1 AS x FROM voiceprint WHERE tenant_id = ? AND owner_id = ?').get(tenantId, ownerId);
   return Boolean(row);
 }

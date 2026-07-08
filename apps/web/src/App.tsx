@@ -4,6 +4,7 @@ import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
 import { useReminderDelivery } from './useReminders';
 import { useSyncVersions } from './useSyncVersions';
+import { useMemoryGuidanceBanner } from './useMemoryGuidance';
 import { useAppStore } from './store';
 import { currentApiKey } from './api';
 import { PulseOrb } from './components/PulseOrb';
@@ -12,6 +13,7 @@ import { VoiceprintPanel } from './components/VoiceprintPanel';
 import { ReminderPanel } from './components/ReminderPanel';
 import { PrivacyVaultPanel } from './components/PrivacyVaultPanel';
 import { MemoryActivityPanel } from './components/MemoryActivityPanel';
+import { ConversationHistoryPanel } from './components/ConversationHistoryPanel';
 import { usePrivacyVaultSync, useSessionContextPush } from './usePrivacyVault';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ActivationGate } from './components/ActivationGate';
@@ -52,6 +54,7 @@ function MainApp() {
   useSyncVersions(); // UI 同步：语音/调度器改了数据 → 面板 ≤5s 自动刷新
   usePrivacyVaultSync(); // R2 隐私 vault：拉取云端 hold → 本机落库 → server 即焚
   useSessionContextPush(connected, roomId); // R2 通话注入：vault 上行 server 内存，挂断即弃
+  const showMemoryGuidance = useMemoryGuidanceBanner(); // R3.5 引导闭环：家庭模式+零声纹时提示记忆未激活
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
@@ -78,6 +81,10 @@ function MainApp() {
       >
         <PulseOrb phase={voiceStatus} label={orbLabel} getAudioTrack={getAudioTrack} />
       </div>
+
+      {showMemoryGuidance && (
+        <div style={styles.guidanceBanner}>⚠️ 记忆功能未激活：还没有注册声纹。通话中说"我是XX，记住我的声音"</div>
+      )}
 
       {/* 播放条紧贴脉冲球下方、无边框融背景（2026-07-06 川哥拍板）；audio 元素也在组件内 */}
       <MusicPlayer roomId={roomId} connected={connected} />
@@ -139,6 +146,7 @@ function MainApp() {
 
         <SettingsPanel />
         <MemoryActivityPanel />
+        <ConversationHistoryPanel />
         <ReminderPanel />
         <VoiceprintPanel />
         <PrivacyVaultPanel />
@@ -166,6 +174,18 @@ const styles: Record<string, React.CSSProperties> = {
   // 脉冲区：顶部+两侧顶满 app 边缘，占上半屏
   orbZone: { width: '100%', height: 'min(58dvh, 560px)', flexShrink: 0 },
   main: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22, padding: '8px 24px 24px' },
+  guidanceBanner: {
+    alignSelf: 'center',
+    maxWidth: 520,
+    margin: '0 24px 14px',
+    padding: '10px 16px',
+    borderRadius: 14,
+    background: 'rgba(251,191,36,0.12)',
+    border: '1px solid rgba(251,191,36,0.35)',
+    color: '#fbbf24',
+    fontSize: 13,
+    textAlign: 'center',
+  },
   captions: { minHeight: 64, maxWidth: 520, textAlign: 'center' },
   userLine: { margin: '6px 0', color: '#93c5fd', fontSize: 15 },
   botLine: { margin: '6px 0', color: '#e5e7eb', fontSize: 17 },

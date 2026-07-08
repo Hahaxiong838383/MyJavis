@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { memory } from '../memory/index.js';
+import { memory, storage } from '../memory/index.js';
 import { listActivity } from '../activity/feed.js';
-import { tenantOwnsOwner } from '../voiceprint/registry.js';
+import { listActiveVoiceprints, soloOwnerId, tenantOwnsOwner } from '../voiceprint/registry.js';
 import type { AppEnv } from '../tenant/context.js';
 import type { GovernanceResult } from '../memory/types.js';
 import type { Context } from 'hono';
@@ -18,7 +18,7 @@ governanceRoute.use('*', async (c, next) => {
   const tenant = c.get('tenant');
   if (!tenant) return c.json({ ok: false, error: 'unauthorized' }, 401);
   // tenant 级端点（无 owner 参数语义）：有租户上下文即放行
-  if (c.req.path.endsWith('/activity')) {
+  if (c.req.path.endsWith('/activity') || c.req.path.endsWith('/owners') || c.req.path.endsWith('/conversations')) {
     await next();
     return;
   }
@@ -52,6 +52,43 @@ governanceRoute.get('/activity', (c) => {
   const tenant = c.get('tenant');
   if (!tenant) return c.json({ ok: true, events: [] });
   return c.json({ ok: true, events: listActivity(tenant.id) });
+});
+
+// R3.5 owners 列表（面板"owner 点选"）：solo 默认 owner（恒在首位）+ 该租户声纹表全部 owner。
+governanceRoute.get('/owners', (c) => {
+  const tenant = c.get('tenant');
+  if (!tenant) return c.json({ ok: true, owners: [] });
+  const solo = {
+    ownerId: soloOwnerId(tenant.id),
+    displayName: tenant.userTitle || '我',
+    source: 'solo' as const,
+    memoryCount: storage.countMemoriesByOwner(soloOwnerId(tenant.id)),
+  };
+  const voiceprintOwners = listActiveVoiceprints(tenant.id).map((vp) => ({
+    ownerId: vp.ownerId,
+    displayName: vp.displayName,
+    source: 'voiceprint' as const,
+    memoryCount: storage.countMemoriesByOwner(vp.ownerId),
+  }));
+  return c.json({ ok: true, owners: [solo, ...voiceprintOwners] });
+});
+
+// R3.5 对话历史面板：按租户取最近对话（event_log tenant_id 迁移前的老行不返回，见 storage.ts 注释）。
+governanceRoute.get('/conversations', (c) => {
+  const tenant = c.get('tenant');
+  if (!tenant) return c.json({ ok: true, conversations: [] });
+  const limit = Math.min(200, Number(c.req.query('limit') ?? 50) || 50);
+  const events = storage.listEventsByTenant(tenant.id, limit);
+  return c.json({
+    ok: true,
+    conversations: events.map((e) => ({
+      id: e.id,
+      roomId: e.roomId,
+      sourceRole: e.sourceRole,
+      utteranceText: e.utteranceText,
+      createdAt: e.createdAt,
+    })),
+  });
 });
 
 // R1.1 召回预览（只读）：面板输入一句话 → 看会想起哪些记忆、每条为什么（命中词/来源/得分）。

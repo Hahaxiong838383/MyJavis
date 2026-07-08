@@ -31,6 +31,13 @@ TN=$(curl -s -X POST $BASE/api/tenant -H 'X-Javis-Key: e2e-admin' -H 'Content-Ty
 TID=$(echo "$TN" | python3 -c "import json,sys; print(json.load(sys.stdin)['tenant']['id'])")
 echo "tenant=$TID"
 
+# R3.5：新租户默认 solo=true（记忆全归租户默认 owner），会让 recall 的 effectiveOwnerId
+# 变成 owner_tenant_$TID 而非声纹派生 owner，与本脚本预灌到声纹 owner 下的种子记忆对不上。
+# 本脚本验的是"召回相关性"本身（非 solo 语义，那部分见 solo-mode.test.ts + e2e-solo-local.sh），
+# 关掉 solo 让 effectiveOwnerId 回落声纹 owner，保持既有断言语义不变。
+curl -s -X PUT "$BASE/api/me/config?tenantId=$TID" -H 'X-Javis-Key: e2e-admin' -H 'Content-Type: application/json' \
+  -d '{"soloMode":false}' > /dev/null
+
 say() { # say <文本> → 带 mock 声纹身份（score 0.9 = stable）的 /v1 回调
   curl -s -m 25 -X POST "$BASE/v1/chat/completions?session=recall-room&tenant=$TID&user=vp_recall_e2e" \
     -H 'Content-Type: application/json' \

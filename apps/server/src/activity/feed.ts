@@ -9,7 +9,7 @@
  */
 import { bumpSyncVersion } from '../sync/versions.js';
 
-export type ActivityKind = 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction';
+export type ActivityKind = 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction' | 'quarantine';
 
 export interface ActivityEvent {
   ts: number;

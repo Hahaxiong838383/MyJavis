@@ -35,12 +35,13 @@ say() {
     -d "{\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}]}"
 }
 
-# owner 与 mock 声纹一致（recall 分人过滤）：先 say 一轮建立身份，从 DB owner 表取真值
+# R3.5：新租户默认 solo=true——记忆的 effectiveOwnerId 是租户默认 owner（owner_tenant_<TID>），
+# 不再是声纹派生 owner（那条路径仍写 owner 表，但只用于"称呼"，不是记忆归属真值）。
+# session-context 的 ownerId 必须跟 recall 的 effectiveOwnerId 对齐，否则分人过滤会拿不到 vault 记忆。
+OWNER="owner_tenant_${TID}"
 say "你好" > /dev/null
 sleep 0.5
-OWNER=$(sqlite3 "$DB" "SELECT memory_owner_id FROM owner LIMIT 1" 2>/dev/null || echo "")
-[ -z "$OWNER" ] && { echo "owner 推导失败"; sqlite3 "$DB" ".tables"; exit 1; }
-echo "owner=$OWNER"
+echo "owner=$OWNER (solo default)"
 
 # 1) pending 空态 + 鉴权
 OUT=$(curl -s $BASE/api/privacy/pending -H "X-Javis-Key: $TOKEN")

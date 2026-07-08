@@ -4,6 +4,8 @@ import type { SourceRole } from '../memory/types.js';
 
 export interface AppendUtteranceInput {
   roomId: string;
+  /** R3.5 对话历史面板：租户归属，未传的老调用点落 NULL（老行不进面板，见 storage.ts listEventsByTenant）。 */
+  tenantId?: string;
   asrSegmentId?: string;
   speakerEvidenceId?: string;
   isFinal: boolean;
@@ -28,6 +30,7 @@ export class EventLog {
     const record: EventLogRecord = {
       id: hashCandidate(input.roomId, input.utteranceText, input.speakerEvidenceId, asrSegmentId, input.sourceRole),
       roomId: input.roomId,
+      tenantId: input.tenantId,
       asrSegmentId,
       speakerEvidenceId: input.speakerEvidenceId,
       isFinal: input.isFinal,

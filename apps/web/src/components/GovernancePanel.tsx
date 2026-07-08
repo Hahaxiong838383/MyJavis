@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../api';
+import { useSyncRefresh } from '../useSyncVersions';
 
 interface MemoryItemDto {
   id: string;
@@ -35,6 +36,13 @@ interface RecallPreviewResponse {
   error?: string;
 }
 
+interface OwnerDto {
+  ownerId: string;
+  displayName: string;
+  source: 'solo' | 'voiceprint';
+  memoryCount: number;
+}
+
 const SOURCE_LABEL: Record<RecallPreviewItem['source'], { text: string; color: string }> = {
   relevant: { text: '相关命中', color: '#67e8f9' },
   recent: { text: '最近保底', color: '#a5b4fc' },
@@ -44,9 +52,11 @@ const SOURCE_LABEL: Record<RecallPreviewItem['source'], { text: string; color: s
 export function GovernancePanel() {
   const [ownerId, setOwnerId] = useState('');
   const [targetOwnerId, setTargetOwnerId] = useState('');
+  const [owners, setOwners] = useState<OwnerDto[]>([]);
+  const [manualMode, setManualMode] = useState(false);
   const [memories, setMemories] = useState<MemoryItemDto[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [message, setMessage] = useState('输入 ownerId 后查看自己的记忆。');
+  const [message, setMessage] = useState('选择上面的人后显示 TA 的记忆。');
   const [loading, setLoading] = useState(false);
   const [previewQuery, setPreviewQuery] = useState('');
   const [preview, setPreview] = useState<RecallPreviewResponse | null>(null);
@@ -55,8 +65,26 @@ export function GovernancePanel() {
   const selected = useMemo(() => memories.find((item) => item.id === selectedId), [memories, selectedId]);
   const canAct = ownerId.trim().length > 0 && Boolean(selected);
 
-  const load = async () => {
-    const owner = ownerId.trim();
+  const loadOwners = async () => {
+    try {
+      const data = (await apiFetch('/api/governance/owners').then((res) => res.json())) as {
+        ok: boolean;
+        owners?: OwnerDto[];
+      };
+      if (data.ok) setOwners(data.owners ?? []);
+    } catch {
+      /* owners 加载失败不阻塞——还有"手动输入"兜底 */
+    }
+  };
+  const loadOwnersRef = useRef(loadOwners);
+  loadOwnersRef.current = loadOwners;
+  useEffect(() => {
+    void loadOwnersRef.current();
+  }, []);
+  useSyncRefresh('voiceprint', () => void loadOwnersRef.current()); // 新注册/删除声纹 → owner 列表刷新
+
+  const load = async (ownerOverride?: string) => {
+    const owner = (ownerOverride ?? ownerId).trim();
     if (!owner) {
       setMessage('ownerId 必填');
       return;
@@ -73,6 +101,11 @@ export function GovernancePanel() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const pickOwner = (owner: OwnerDto) => {
+    setOwnerId(owner.ownerId);
+    void load(owner.ownerId);
   };
 
   const act = async (action: 'suspend' | 'resume' | 'delete' | 'reassign' | 'export') => {
@@ -107,6 +140,7 @@ export function GovernancePanel() {
       if (!response.ok || !data.ok) throw new Error(data.error || `${action} 失败`);
       setMessage(`${actionLabel(action)}成功`);
       await load();
+      void loadOwners(); // 记忆条数变了（暂停/删除/重归属），chips 上的计数徽标跟着刷新
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -146,8 +180,40 @@ export function GovernancePanel() {
         </button>
       </div>
 
+      <div style={styles.ownerPicker}>
+        {!manualMode ? (
+          <>
+            <div style={styles.chipRow}>
+              {owners.length === 0 ? (
+                <span style={styles.help}>还没有可选的人（声纹列表加载中或为空）。</span>
+              ) : (
+                owners.map((owner) => (
+                  <button
+                    key={owner.ownerId}
+                    style={{ ...styles.chip, ...(ownerId === owner.ownerId ? styles.chipActive : {}) }}
+                    onClick={() => pickOwner(owner)}
+                  >
+                    {owner.displayName}
+                    <span style={styles.chipCount}>{owner.memoryCount}</span>
+                  </button>
+                ))
+              )}
+            </div>
+            <button style={styles.linkButton} onClick={() => setManualMode(true)}>
+              手动输入 ownerId
+            </button>
+          </>
+        ) : (
+          <div style={styles.controls}>
+            <input style={styles.input} value={ownerId} placeholder="ownerId" onChange={(event) => setOwnerId(event.target.value)} />
+            <button style={styles.linkButton} onClick={() => setManualMode(false)}>
+              切回点选
+            </button>
+          </div>
+        )}
+      </div>
+
       <div style={styles.controls}>
-        <input style={styles.input} value={ownerId} placeholder="ownerId" onChange={(event) => setOwnerId(event.target.value)} />
         <input
           style={styles.input}
           value={targetOwnerId}
@@ -290,6 +356,38 @@ const styles: Record<string, React.CSSProperties> = {
   title: { margin: 0, fontSize: 18 },
   help: { margin: '6px 0 0', color: '#94a3b8', fontSize: 12 },
   controls: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 14 },
+  ownerPicker: { marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 },
+  chipRow: { display: 'flex', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    border: '1px solid rgba(148,163,184,.24)',
+    borderRadius: 999,
+    padding: '7px 12px',
+    color: '#e2e8f0',
+    background: 'rgba(2,6,23,.46)',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  chipActive: { borderColor: 'rgba(103,232,249,.65)', color: '#a5f3fc', background: 'rgba(8,145,178,.18)' },
+  chipCount: {
+    fontSize: 11,
+    color: '#64748b',
+    background: 'rgba(148,163,184,.14)',
+    borderRadius: 999,
+    padding: '0 6px',
+  },
+  linkButton: {
+    alignSelf: 'flex-start',
+    border: 'none',
+    background: 'none',
+    color: '#67e8f9',
+    fontSize: 12,
+    cursor: 'pointer',
+    padding: 0,
+    textDecoration: 'underline',
+  },
   input: {
     border: '1px solid rgba(148,163,184,.18)',
     borderRadius: 14,

@@ -5,6 +5,7 @@
  */
 import { Hono } from 'hono';
 import { createTenant, listTenants, updateTenantConfig, getTenant } from '../tenant/registry.js';
+import { bumpSyncVersion } from '../sync/versions.js';
 import type { AppEnv } from '../tenant/context.js';
 
 const tenantRoute = new Hono<AppEnv>();
@@ -65,20 +66,27 @@ meRoute.get('/config', (c) => {
       name: tenant.name,
       personaExtra: tenant.personaExtra ?? '',
       userTitle: tenant.userTitle ?? '',
+      soloMode: tenant.soloMode,
     },
   });
 });
 
-/** 自配 persona/称呼（叠加段，基座与安全基线 server 端锁定不可覆盖）。 */
+/** 自配 persona/称呼/单人模式（叠加段，基座与安全基线 server 端锁定不可覆盖）。 */
 meRoute.put('/config', async (c) => {
   const tenant = c.get('tenant') ?? (c.get('isAdmin') ? adminFallbackTenant(c.req.query('tenantId')) : null);
   if (!tenant) return c.json({ ok: false, error: '无租户上下文' }, 404);
-  const body = (await c.req.json().catch(() => null)) as { personaExtra?: string; userTitle?: string } | null;
+  const body = (await c.req.json().catch(() => null)) as
+    | { personaExtra?: string; userTitle?: string; soloMode?: boolean }
+    | null;
   if (!body) return c.json({ ok: false, error: 'invalid json' }, 400);
   const personaExtra = body.personaExtra !== undefined ? String(body.personaExtra).slice(0, MAX_PERSONA_EXTRA) : undefined;
   const userTitle = body.userTitle !== undefined ? String(body.userTitle).trim().slice(0, MAX_TITLE) : undefined;
-  const updated = updateTenantConfig(tenant.id, { personaExtra, userTitle });
-  console.log(`[tenant] config updated id=${tenant.id} personaExtra=${personaExtra?.length ?? '-'}字 title="${userTitle ?? '-'}"`);
+  const soloMode = typeof body.soloMode === 'boolean' ? body.soloMode : undefined;
+  const updated = updateTenantConfig(tenant.id, { personaExtra, userTitle, soloMode });
+  if (soloMode !== undefined) bumpSyncVersion(tenant.id, 'memory'); // 单人模式切换影响 owner 归属，面板需感知
+  console.log(
+    `[tenant] config updated id=${tenant.id} personaExtra=${personaExtra?.length ?? '-'}字 title="${userTitle ?? '-'}" soloMode=${soloMode ?? '-'}`,
+  );
   return c.json({
     ok: true,
     me: {
@@ -86,6 +94,7 @@ meRoute.put('/config', async (c) => {
       name: updated!.name,
       personaExtra: updated!.personaExtra ?? '',
       userTitle: updated!.userTitle ?? '',
+      soloMode: updated!.soloMode,
     },
   });
 });

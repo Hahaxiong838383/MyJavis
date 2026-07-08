@@ -17,6 +17,13 @@ import { assemblePrompt } from '../prompt/orchestrator.js';
 import { createLlm } from '../providers/llm.js';
 import { getPromptOverride } from '../rtc-prompt-override.js';
 import { eventLog, identity, memory, mockIdentityPayload } from '../memory/index.js';
+import { extractMemoryCandidates } from '../memory/candidates.js';
+import {
+  consumePendingGuidance,
+  GUIDANCE_CONTEXT_NOTE,
+  markPendingGuidance,
+  shouldGuideVoiceprintRegistration,
+} from '../memory/guidance.js';
 import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
 import {
@@ -69,7 +76,7 @@ import {
 } from '../music/music-session.js';
 import { buildStreamUrl } from '../music/stream-url.js';
 import { config } from '../config.js';
-import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints } from '../voiceprint/registry.js';
+import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints, soloOwnerId } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
 import { getTenant } from '../tenant/registry.js';
 import {
@@ -176,6 +183,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
       queryStatus: c.req.query('speakerStatus'),
     });
   const identityResolution = identity.resolve(speakerPayload);
+  // R3.5 单人模式（solo=true 默认开）：租户默认 owner 兜底，声纹识别与否都归它，整个邀请码
+  // 一个记忆池开箱即用；家庭模式（solo=false）完全走原声纹 owner。三处下游：recall/remember
+  // 的 ownerId + remember 内部 identityStable 判断（soloStable）。
+  const effectiveOwnerId = tenant?.soloMode ? soloOwnerId(tenant.id) : identityResolution.ownerId;
+  const effectiveStable = tenant?.soloMode ? true : identityResolution.state === 'active_stable';
   // 身份粘滞（体验层）：短句（1-2s）声纹特征不足打不出标签是物理特性——同房间 30s 内有过
   // 稳定标签就沿用其"称呼"，只影响 LLM 怎么叫人；记忆归属仍走本轮真实证据（无标签=quarantine），
   // 串账风险为零。
@@ -200,7 +212,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
       ? await turnTrace.measure('memoryReadMs', () =>
           memory
             .recall({
-              ownerId: identityResolution.ownerId,
+              ownerId: effectiveOwnerId,
               tenantId: tenant?.id,
               roomId: sessionId,
               query: userText,
@@ -247,7 +259,9 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const makeupNoteText = missedReminders.length
     ? makeupNote(missedReminders.map((r) => ({ display: fmtDue(r.dueAt), content: r.content })))
     : undefined;
-  const contextNoteText = [speakerNote, makeupNoteText].filter(Boolean).join('\n\n') || undefined;
+  // 引导闭环（方案A）：上一轮因身份未识别被 quarantine 过 → 这一轮消费一次性提醒标记。
+  const guidanceNoteText = consumePendingGuidance(sessionId) ? GUIDANCE_CONTEXT_NOTE : undefined;
+  const contextNoteText = [speakerNote, makeupNoteText, guidanceNoteText].filter(Boolean).join('\n\n') || undefined;
   const systemPrompt =
     overridePrompt ??
     (await turnTrace.measure('promptAssemblyMs', () =>
@@ -359,16 +373,23 @@ customLlmRoute.post('/chat/completions', async (c) => {
           if (!discarded && userText.trim()) {
             const userEvent = eventLog.appendUtterance({
               roomId: sessionId ?? 'unknown-room',
+              tenantId: tenant?.id,
               speakerEvidenceId: identityResolution.evidence.id,
               isFinal: true,
               sourceRole: 'user',
               utteranceText: userText,
             });
+            // 引导闭环：家庭模式下这句话会因身份未识别被 quarantine → 标记下一轮口头提醒
+            // （remember 是 fire-and-forget 拿不到异步结果，故用同构判定预判，见 memory/guidance.ts）。
+            if (shouldGuideVoiceprintRegistration(tenant?.soloMode, identityResolution.state, extractMemoryCandidates(userText).length)) {
+              markPendingGuidance(sessionId ?? 'unknown-room');
+            }
             void memory
               .remember({
-                ownerId: identityResolution.ownerId,
+                ownerId: effectiveOwnerId,
                 tenantId: tenant?.id,
                 identity: identityResolution,
+                soloStable: effectiveStable,
                 eventId: userEvent.id,
                 roomId: sessionId ?? 'unknown-room',
                 utterance: userText,
@@ -384,6 +405,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
             const spoken = assistantText.trim();
             eventLog.appendUtterance({
               roomId: sessionId ?? 'unknown-room',
+              tenantId: tenant?.id,
               isFinal: true,
               sourceRole: 'assistant',
               utteranceText: hasSensitiveContent(spoken) ? '[隐私脱敏:助手回复]' : spoken,
