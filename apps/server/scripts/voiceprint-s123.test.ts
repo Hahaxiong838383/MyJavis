@@ -69,4 +69,21 @@ const full = enrollFullLine(['川哥', '陆总', '小美']);
 assert.ok(full.includes('忘掉某某的声音'), '满员话术联动 S2');
 assert.ok(full.includes('川哥、陆总、小美'));
 
+// —— 称呼桥接（2026-07-08 川哥实测"注册完还叫臭臭"）：注册成功→同房间立即按注册名称呼 ——
+{
+  const { setFreshEnrollName, getFreshEnrollName, clearFreshEnrollName } = await import(
+    '../src/voiceprint/enroll-session.js'
+  );
+  const room = 'room-fresh-enroll-test';
+  assert.equal(getFreshEnrollName(room), undefined, '未注册前无桥接名');
+  assert.equal(getFreshEnrollName(undefined), undefined, '无房间不桥接');
+  setFreshEnrollName(room, '川哥');
+  assert.equal(getFreshEnrollName(room), '川哥', '注册后同房间桥接生效');
+  setFreshEnrollName(room, '川总'); // 同房间重注册改名 → 覆盖
+  assert.equal(getFreshEnrollName(room), '川总', '重注册覆盖桥接名');
+  assert.equal(getFreshEnrollName('room-other'), undefined, '桥接按房间隔离');
+  clearFreshEnrollName(room);
+  assert.equal(getFreshEnrollName(room), undefined, '房间关闭清理后不残留');
+}
+
 console.log('voiceprint-s123.test ok');

@@ -27,6 +27,7 @@ import {
   enrollSuccessLine,
   failEnroll,
   getEnroll,
+  setFreshEnrollName,
 } from '../voiceprint/enroll-session.js';
 import { speakText } from '../providers/rtc-control.js';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
@@ -135,6 +136,8 @@ voiceprintRoute.post('/register', async (c) => {
     );
     if (roomId) {
       completeEnroll(roomId);
+      // 称呼桥接：火山本房间不识别新声纹（S6），但称呼层立即按注册名生效（下轮起不再叫默认称呼）
+      setFreshEnrollName(roomId, displayName);
       // 新声纹对「当前」房间不生效（IdList 是 StartVoiceChat 时传的）——播报里如实说"下次"。
       speakText(roomId, enrollSuccessLine(displayName), false).catch((err) =>
         console.log(`[voiceprint] 成功播报失败（不阻塞）：${(err as Error).message}`),

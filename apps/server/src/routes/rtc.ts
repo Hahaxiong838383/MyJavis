@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { setPromptOverride, clearPromptOverride } from '../rtc-prompt-override.js';
 import { callRtcOpenAPI } from '../providers/volc-openapi.js';
 import { listActiveVoiceprints } from '../voiceprint/registry.js';
+import { clearFreshEnrollName } from '../voiceprint/enroll-session.js';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
 
 const require = createRequire(import.meta.url);
@@ -88,6 +89,7 @@ const ROOM_ZOMBIE_TTL_MS = Number(process.env.ROOM_ZOMBIE_TTL_MS ?? 4 * 3600_000
 /** 尽力停房：火山任务 StopVoiceChat（失败忽略——可能早已自停）+ 本地注册/override 清理。 */
 async function stopRoomBestEffort(roomId: string, reason: string): Promise<void> {
   clearPromptOverride(roomId);
+  clearFreshEnrollName(roomId);
   agentSessions.delete(roomId);
   try {
     await callRtcOpenAPI('StopVoiceChat', {
@@ -341,6 +343,7 @@ rtcRoute.post('/stop', async (c) => {
   const taskId = body.taskId || roomId;
   if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
   clearPromptOverride(roomId);
+  clearFreshEnrollName(roomId);
   agentSessions.delete(roomId);
   const result = await callRtcOpenAPI('StopVoiceChat', {
     AppId: process.env.VOLC_RTC_APP_ID,

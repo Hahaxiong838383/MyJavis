@@ -215,6 +215,27 @@ export function clearEnroll(roomId: string): void {
   sessions.delete(roomId);
 }
 
+// ---------- 注册即生效（称呼层桥接，2026-07-08 生产实测驱动） ----------
+// 火山 IdList 仅 StartVoiceChat 时传入（S6 硬限）：刚注册的声纹本房间不会打标签。
+// 不桥接的话，用户刚听完"我记住你的声音了"下一句又被叫回默认称呼（川哥实测"还叫臭臭"）。
+// 房间余下时间内无标签发言按刚注册的名字称呼；真声纹标签出现则让位（taggedName 优先级更高）。
+// 仅称呼层——不碰身份证据链 / 记忆归属（identityResolution 保持纯净）。
+
+const freshEnrollNames = new Map<string, string>(); // roomId → 刚注册的 displayName
+
+export function setFreshEnrollName(roomId: string, displayName: string): void {
+  freshEnrollNames.set(roomId, displayName);
+}
+
+export function getFreshEnrollName(roomId: string | undefined): string | undefined {
+  return roomId ? freshEnrollNames.get(roomId) : undefined;
+}
+
+/** 房间关闭（手动 stop / 僵尸清扫 / 踢旧）时清理，防 Map 无界增长。 */
+export function clearFreshEnrollName(roomId: string): void {
+  freshEnrollNames.delete(roomId);
+}
+
 // ---------- 话术（server 直出，不走 LLM，保证可控） ----------
 
 /**

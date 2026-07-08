@@ -42,6 +42,7 @@ import {
   enrollReplaceLine,
   extractNameReplyDetailed,
   getEnroll,
+  getFreshEnrollName,
   isConfirmNo,
   isConfirmYes,
   isEnrollCancel,
@@ -200,7 +201,10 @@ customLlmRoute.post('/chat/completions', async (c) => {
   }
   const sticky = !taggedName && sessionId ? stickySpeakers.get(sessionId) : undefined;
   const stickyName = sticky && Date.now() - sticky.ts < STICKY_SPEAKER_TTL_MS ? sticky.displayName : undefined;
-  const speakerName = taggedName ?? stickyName;
+  // 第三级兜底：本房间刚注册过声纹 → 按注册名称呼（火山 S6：新声纹当前房间不打标签，
+  // 不桥接则注册完下一句就被叫回默认称呼）。真标签/粘滞优先，桥接只在两者皆无时生效。
+  const freshEnrollName = !taggedName && !stickyName ? getFreshEnrollName(sessionId) : undefined;
+  const speakerName = taggedName ?? stickyName ?? freshEnrollName;
   const turnTrace = new TurnTrace({
     roomId: sessionId ?? 'unknown-room',
     turnId: `${sessionId ?? 'room'}-${Date.now()}`,
@@ -282,7 +286,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
   // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
     `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
-      `${speakerName ? ` [speaker:${speakerName}${taggedName ? '' : '·sticky'}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
+      `${speakerName ? ` [speaker:${speakerName}${taggedName ? '' : freshEnrollName ? '·fresh-enroll' : '·sticky'}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
       ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
   );
   // 标签形态观测：正常剥离打确认；含"当前说话人"却没剥掉 = 火山标签形态与解析器不符，打告警。
@@ -392,7 +396,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
             });
             // 引导闭环：家庭模式下这句话会因身份未识别被 quarantine → 标记下一轮口头提醒
             // （remember 是 fire-and-forget 拿不到异步结果，故用同构判定预判，见 memory/guidance.ts）。
-            if (shouldGuideVoiceprintRegistration(tenant?.soloMode, identityResolution.state, extractMemoryCandidates(userText).length)) {
+            // 本房间刚注册过声纹 → 抑制（用户刚做完注册还引导"去注册"很蠢；识别下次通话才生效）。
+            if (
+              !getFreshEnrollName(sessionId) &&
+              shouldGuideVoiceprintRegistration(tenant?.soloMode, identityResolution.state, extractMemoryCandidates(userText).length)
+            ) {
               markPendingGuidance(sessionId ?? 'unknown-room');
             }
             void memory
