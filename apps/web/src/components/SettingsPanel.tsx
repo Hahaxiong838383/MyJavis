@@ -78,7 +78,7 @@ export function SettingsPanel() {
   };
 
   return (
-    <section style={styles.panel}>
+    <section id="settings-panel" style={styles.panel}>
       <div style={styles.header}>
         <div>
           <h2 style={styles.title}>我的设置{userTitle || name ? ` · ${userTitle || name}` : ''}</h2>

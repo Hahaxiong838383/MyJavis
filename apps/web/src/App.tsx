@@ -54,7 +54,7 @@ function MainApp() {
   useSyncVersions(); // UI 同步：语音/调度器改了数据 → 面板 ≤5s 自动刷新
   usePrivacyVaultSync(); // R2 隐私 vault：拉取云端 hold → 本机落库 → server 即焚
   useSessionContextPush(connected, roomId); // R2 通话注入：vault 上行 server 内存，挂断即弃
-  const showMemoryGuidance = useMemoryGuidanceBanner(); // R3.5 引导闭环：家庭模式+零声纹时提示记忆未激活
+  const memoryGuidance = useMemoryGuidanceBanner(); // 零声纹引导：家庭模式=⚠️记忆未激活警示 / 单人模式=💡温和引导
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);
   const userSubtitle = useAppStore((s) => s.userSubtitle);
@@ -73,6 +73,23 @@ function MainApp() {
 
   return (
     <div style={styles.page}>
+      {/* 设置入口（0.15.1）：面板藏在滚动流里被川哥实测找不到——固定右上角一键直达。
+          smooth 后 350ms 没接近目标就 instant 兜底（视口异常时 smooth 会静默不滚）。 */}
+      <button
+        style={styles.settingsFab}
+        title="设置"
+        aria-label="打开设置"
+        onClick={() => {
+          const el = document.getElementById('settings-panel');
+          if (!el) return;
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          window.setTimeout(() => {
+            if (Math.abs(el.getBoundingClientRect().top) > 120) el.scrollIntoView({ block: 'start' });
+          }, 350);
+        }}
+      >
+        ⚙️
+      </button>
       <div
         style={{ ...styles.orbZone, cursor: guardState === 'guarded' ? 'pointer' : 'default' }}
         onClick={() => {
@@ -82,8 +99,13 @@ function MainApp() {
         <PulseOrb phase={voiceStatus} label={orbLabel} getAudioTrack={getAudioTrack} />
       </div>
 
-      {showMemoryGuidance && (
+      {memoryGuidance === 'family' && (
         <div style={styles.guidanceBanner}>⚠️ 记忆功能未激活：还没有注册声纹。通话中说"我是XX，记住我的声音"</div>
+      )}
+      {memoryGuidance === 'solo' && (
+        <div style={styles.guidanceBannerSoft}>
+          💡 还没注册声纹——通话中说"我是XX，记住我的声音"，Javis 就能听声认人、用名字称呼你
+        </div>
       )}
 
       {/* 播放条紧贴脉冲球下方、无边框融背景（2026-07-06 川哥拍板）；audio 元素也在组件内 */}
@@ -185,6 +207,37 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#fbbf24',
     fontSize: 13,
     textAlign: 'center',
+  },
+  // solo 版引导：温和提示（记忆本身已工作，只是推荐注册声纹），低调不抢戏
+  guidanceBannerSoft: {
+    alignSelf: 'center',
+    maxWidth: 520,
+    margin: '0 24px 14px',
+    padding: '9px 16px',
+    borderRadius: 14,
+    background: 'rgba(103,232,249,0.08)',
+    border: '1px solid rgba(103,232,249,0.22)',
+    color: '#a5f3fc',
+    fontSize: 12.5,
+    textAlign: 'center',
+  },
+  // 右上角固定设置入口：半透明圆钮浮在律动球上方，不参与滚动流
+  settingsFab: {
+    position: 'fixed',
+    top: 14,
+    right: 16,
+    zIndex: 50,
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    border: '1px solid rgba(148,163,184,.22)',
+    background: 'rgba(15,23,42,.55)',
+    color: '#e5e7eb',
+    fontSize: 18,
+    lineHeight: 1,
+    cursor: 'pointer',
+    backdropFilter: 'blur(6px)',
+    WebkitBackdropFilter: 'blur(6px)',
   },
   captions: { minHeight: 64, maxWidth: 520, textAlign: 'center' },
   userLine: { margin: '6px 0', color: '#93c5fd', fontSize: 15 },

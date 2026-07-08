@@ -22,7 +22,10 @@ import {
   consumePendingGuidance,
   GUIDANCE_CONTEXT_NOTE,
   markPendingGuidance,
+  markSoloGuidanceSent,
+  shouldGuideSoloVoiceprintOnboarding,
   shouldGuideVoiceprintRegistration,
+  SOLO_GUIDANCE_CONTEXT_NOTE,
 } from '../memory/guidance.js';
 import { fillerConfig, fillerPicker } from '../fillers.js';
 import { networkRttFromHeaders, TurnTrace, writeTelemetry } from '../telemetry.js';
@@ -261,7 +264,15 @@ customLlmRoute.post('/chat/completions', async (c) => {
     : undefined;
   // 引导闭环（方案A）：上一轮因身份未识别被 quarantine 过 → 这一轮消费一次性提醒标记。
   const guidanceNoteText = consumePendingGuidance(sessionId) ? GUIDANCE_CONTEXT_NOTE : undefined;
-  const contextNoteText = [speakerNote, makeupNoteText, guidanceNoteText].filter(Boolean).join('\n\n') || undefined;
+  // solo 0 声纹引导（2026-07-08 川哥拍板）：单人模式没注册过声纹也口头引导一次（租户级 24h 冷却）。
+  // 此处只判定不落账——真实播出（onDone 未被火山弃播）才 markSoloGuidanceSent，interim 弃用轮不消耗配额。
+  const soloGuidanceWanted =
+    !guidanceNoteText &&
+    shouldGuideSoloVoiceprintOnboarding(tenant?.soloMode, tenant ? listActiveVoiceprints(tenant.id).length : 1, tenant?.id);
+  const contextNoteText =
+    [speakerNote, makeupNoteText, guidanceNoteText, soloGuidanceWanted ? SOLO_GUIDANCE_CONTEXT_NOTE : undefined]
+      .filter(Boolean)
+      .join('\n\n') || undefined;
   const systemPrompt =
     overridePrompt ??
     (await turnTrace.measure('promptAssemblyMs', () =>
@@ -416,6 +427,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
             // 补报已随本轮回复带出（火山未弃播）→ 消耗掉，防每轮重复念
             for (const r of missedReminders) reminderStore().markDelivered(r.id, 'makeup');
             console.log(`[reminder] ${missedReminders.length} missed reminder(s) delivered via makeup`);
+          }
+          if (!discarded && soloGuidanceWanted) {
+            // solo 声纹引导已随本轮回复真实播出 → 落账进入 24h 冷却（弃播轮不落账，下轮再引导）
+            markSoloGuidanceSent(tenant?.id);
+            console.log(`[guidance] solo voiceprint onboarding delivered tenant=${tenant?.id ?? '-'}`);
           }
           if (discarded) console.log(`[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`);
           enqueue(chunk({}, 'stop'));

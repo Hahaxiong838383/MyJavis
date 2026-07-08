@@ -91,6 +91,35 @@ console.log('tenant-owns-owner.test ✅');
 }
 console.log('guidance-marker.test ✅');
 
+// ---------- solo 0 声纹引导（2026-07-08 川哥拍板）：solo=true+声纹0 → 每租户 24h 一次口头引导 ----------
+{
+  const { shouldGuideSoloVoiceprintOnboarding, markSoloGuidanceSent } = await import('../src/memory/guidance.js');
+  _resetGuidanceState();
+  const tn = 'tn_solo_guidance_test';
+  const t0 = 2_000_000;
+
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, tn, t0), true, 'solo+0声纹+首次→引导');
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 1, tn, t0), false, '已有声纹不引导');
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(false, 0, tn, t0), false, '家庭模式走 quarantine 引导，不走此分支');
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(undefined, 0, tn, t0), false, '无租户配置不引导');
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, undefined, t0), false, '无 tenantId 不引导');
+
+  // 判定本身不落账（interim 弃用轮不消耗配额）：连续判定仍为 true
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, tn, t0 + 1_000), true, '未落账前重复判定仍触发');
+  markSoloGuidanceSent(tn, t0 + 1_000); // 流正常完成（onDone 未弃播）才落账
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, tn, t0 + 2_000), false, '落账后 24h 冷却内不重复');
+  assert.equal(
+    shouldGuideSoloVoiceprintOnboarding(true, 0, tn, t0 + 24 * 3600_000 + 1_000),
+    true,
+    '24h 冷却过后声纹仍为 0 → 再次引导',
+  );
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, 'tn_other_tenant', t0 + 2_000), true, '冷却按租户隔离');
+
+  _resetGuidanceState();
+  assert.equal(shouldGuideSoloVoiceprintOnboarding(true, 0, tn, t0 + 2_000), true, 'reset 后重新可引导');
+}
+console.log('solo-guidance.test ✅');
+
 // ---------- 活动流 quarantine 事件零内容断言 ----------
 {
   _resetActivity();

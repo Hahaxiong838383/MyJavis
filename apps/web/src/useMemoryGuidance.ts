@@ -1,7 +1,8 @@
 /**
- * 记忆引导闭环（R3.5 方案A）：家庭模式（solo=false）下还没有任何声纹注册时，
- * 记忆系统实际不工作（声纹未识别的话全部暂存不落库）——App 顶部状态条把这个
- * 隐藏事实变得可见可引导。solo=true 时记忆本来就开箱即用，不显示。
+ * 记忆引导闭环（R3.5 方案A + 2026-07-08 川哥拍板扩展 solo）：
+ * - 家庭模式（solo=false）+ 零声纹：记忆系统实际不工作（未识别的话全部暂存）→ ⚠️ 警示条
+ * - 单人模式（solo=true）+ 零声纹：记忆开箱即用但声纹能让 Javis 听声认人（也服务后续
+ *   降噪等扩展）→ 💡 温和引导条。注册第一条声纹后两种条都自动消失。
  *
  * 依赖两个域的 sync 事件：'memory'（soloMode 切换走 /api/me/config PUT 时 bump）+
  * 'voiceprint'（注册/删除声纹时 bump，见 voiceprint/registry.ts）。
@@ -10,7 +11,9 @@ import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from './api';
 import { useSyncRefresh } from './useSyncVersions';
 
-export function useMemoryGuidanceBanner(): boolean {
+export type MemoryGuidanceKind = 'family' | 'solo' | null;
+
+export function useMemoryGuidanceBanner(): MemoryGuidanceKind {
   const [soloMode, setSoloMode] = useState<boolean | null>(null);
   const [voiceprintCount, setVoiceprintCount] = useState<number | null>(null);
 
@@ -45,5 +48,8 @@ export function useMemoryGuidanceBanner(): boolean {
   useSyncRefresh('memory', () => void loadConfigRef.current());
   useSyncRefresh('voiceprint', () => void loadVoiceprintsRef.current());
 
-  return soloMode === false && voiceprintCount === 0;
+  if (voiceprintCount !== 0) return null;
+  if (soloMode === false) return 'family';
+  if (soloMode === true) return 'solo';
+  return null; // 配置未加载完：不闪现
 }

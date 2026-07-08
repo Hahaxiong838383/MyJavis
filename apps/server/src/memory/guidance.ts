@@ -44,8 +44,41 @@ export function consumePendingGuidance(roomId: string | undefined, now = Date.no
   return true;
 }
 
+// ---------- solo 0 声纹引导（2026-07-08 川哥拍板）----------
+// 单人模式下记忆不依赖声纹，但声纹服务于称呼个性化与后续降噪等扩展能力，
+// 0 声纹的租户也要引导注册。与家庭模式引导（补救性质，房间级 5min）不同：
+// 这是推广性质，租户级 24h 冷却，直到注册第一条声纹后条件自然消失。
+// 判定与落账分离：组装 contextNote 时判定，流正常完成（onDone 未被火山弃播）
+// 才 markSoloGuidanceSent——interim/barge-in 弃用轮不消耗 24h 配额（引导没真说出口）。
+
+const SOLO_GUIDANCE_TTL_MS = 24 * 3600_000;
+const soloGuidanceLastSentAt = new Map<string, number>(); // tenantId → 上次真实播出时刻
+
+export const SOLO_GUIDANCE_CONTEXT_NOTE =
+  '[系统提示] 用户还没有注册声纹。请先正常回答用户这句话，然后在结尾自然地顺带提一句：' +
+  '说「我是XX，记住我的声音」就能注册声纹，之后 Javis 一听声音就认得 TA、会用名字称呼。' +
+  '轻松一句话带过，不推销；不要提"系统/设置/单人模式"这类机制词。';
+
+export function shouldGuideSoloVoiceprintOnboarding(
+  soloMode: boolean | undefined,
+  voiceprintCount: number,
+  tenantId: string | undefined,
+  now = Date.now(),
+): boolean {
+  if (soloMode !== true || voiceprintCount > 0 || !tenantId) return false;
+  const last = soloGuidanceLastSentAt.get(tenantId);
+  if (last === undefined) return true; // 从未引导过：无条件触发（不能用 now-0 比 TTL，小时钟下会误判）
+  return now - last >= SOLO_GUIDANCE_TTL_MS;
+}
+
+/** 仅在本轮回复真实播出（onDone 且未被火山 abort）后调用。 */
+export function markSoloGuidanceSent(tenantId: string | undefined, now = Date.now()): void {
+  if (tenantId) soloGuidanceLastSentAt.set(tenantId, now);
+}
+
 /** 测试专用。 */
 export function _resetGuidanceState(): void {
   guidancePending.clear();
   guidanceLastSentAt.clear();
+  soloGuidanceLastSentAt.clear();
 }
