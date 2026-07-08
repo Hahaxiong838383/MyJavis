@@ -1,7 +1,13 @@
 # R3.5 实施任务：记忆体验断裂修复（引导闭环 + 单人模式 + 面板产品化）
 
-> 你是本任务的执行工程师。本文档自包含：按顺序读完再动手。产出 = 代码 + 测试 + 部署发版 v0.15.0 + 验收报告。
-> 项目仓库：`/Users/rayman.chen/mycc/2-Projects/MyJavis`（独立私有仓，commit/push 在此目录内做）。
+> 你是本任务的执行工程师。本文档自包含：按顺序读完再动手。产出 = 代码 + 测试 + 本地验收全绿 + 验收报告（部署发版是人工卡点，见 §5 Gate 4）。
+>
+> **⚠️ 工作区：你在 git worktree 里干活，不在主仓**
+> - 你的工作目录：`/Users/rayman.chen/mycc/2-Projects/MyJavis-r35`（分支 `feat/r35-memory-ux`，已从 main 切出、依赖已装好）
+> - 主仓 `/Users/rayman.chen/mycc/2-Projects/MyJavis`（main，当前稳定版 v0.14.0）**绝对不碰**——不进它的目录、不改它的文件、不在它里面跑命令
+> - commit 全部提交到你的 worktree 分支；**不 merge 到 main、不 push**（人工验收后由川哥/cc 合并）
+> - preview 浏览器验证：用 launch.json 里的 `myjavis-web-r35` 配置（已指向你的 worktree）
+> - E2E 端口：主仓脚本用 3197-3199，你的临时 server 一律用 **3290-3299** 段并在结束时清理（lsof -ti :端口 拿 PID kill，别用 pkill -f 匹配 env 变量——匹配不到）
 > 接手前置阅读（15 分钟，按序）：本文件 → `HANDOFF.md` 顶部版本段 → `docs/memory-architecture.md` §0/§3 → `04-决策记录.md` 最后 5 条。
 
 ---
@@ -121,15 +127,18 @@ apps/server/scripts/       # 测试全在这（tsx 脚本 + node:assert 风格�
 - 状态条：solo=false+声纹 0 的租户显示黄条；solo=true 不显示。
 - 零点击刷新：后台改数据 → 面板 ≤15s 自动更新。
 
-### Gate 4 生产部署 + 发版 + 真机验收路径
-1. 版本四处同步 **0.15.0**（server/web package.json、tauri.conf.json、Cargo.toml），grep `0.14.0` 零残留。
-2. server 部署（⚠️ 生产=**root@47.239.204.68 香港**，绝不是 aliyun-kr；**先备份再覆盖**：`ssh ... 'cd /opt/myjavis && rm -rf dist.bak-v0.14.0 && cp -r dist dist.bak-v0.14.0'` → `rsync -az --delete apps/server/dist/ root@47.239.204.68:/opt/myjavis/dist/` → 依赖没变不需要 npm install → `pm2 restart myjavis-server` → 公网 `curl https://javis.chenchuan.cc/health` 验 0.15.0）。部署会重启 server（~2 秒），先确认川哥不在通话中（看 pm2 日志最近 5 分钟有无 custom-llm 活动）。
-3. 生产 E2E（用测试租户 tn_833edb45，token 从生产 DB 查）：say 一句"记住我喜欢喝龙井"（带 Bearer，真 LLM）→ `sqlite3` 断言落库 committed 且 owner=`owner_tenant_tn_833edb45` → /owners 含默认 owner 且 memoryCount≥1 → /conversations 出现该轮 → /activity 出现 write 事件。
-4. App 发版：`bash scripts/release-app.sh "记忆开箱即用：不注册声纹也能记住你（单人模式）+ 新增对话历史 + 记忆面板点选查看"`（脚本自动摘 key+签名+上传，完成后 curl updates/latest.json 验 0.15.0）。
-5. **给川哥的真机验收脚本**（写进验收报告）：更新 App → 直接说"记住我周五要去取西装"→ 记忆活动面板 5s 内出 ✏️ 写入事件 → 治理面板点选"我"看到这条 → 对话历史面板看到这轮对话 → 换个说法问"我周五要干嘛来着"Javis 答上来。
+### Gate 4 —— ⛔ 人工卡点：到这里停下，不部署、不发版、不合并
+Gate 1-3 全绿后：版本四处同步 **0.15.0**（server/web package.json、tauri.conf.json、Cargo.toml，grep `0.14.0` 零残留）→ 全部 commit 到 worktree 分支 → **输出验收报告后结束任务**。报告必须含：
+1. 三道门的证据（各测试/E2E 的 PASS 输出摘要、preview 验证结论）
+2. 改动文件清单 + 分支名 + 最新 commit hash
+3. **预写好的部署清单**（供川哥确认后由 cc/下个 session 执行）：合并 main → server 部署（⚠️ 生产=root@47.239.204.68 香港，绝不是 aliyun-kr；先 `cp -r dist dist.bak-v0.14.0` 备份再 rsync；部署前看 pm2 日志确认川哥不在通话）→ 生产 E2E（测试租户 tn_833edb45 说"记住我喜欢喝龙井"→ 断言落库 owner=`owner_tenant_tn_833edb45` + /owners/conversations/activity 三端点见数据）→ `release-app.sh` 发 App
+4. **给川哥的真机验收脚本**：更新 App → 说"记住我周五要去取西装"→ 记忆活动面板 5s 内出 ✏️ 写入 → 治理面板点选"我"看到这条 → 对话历史看到这轮 → 换说法问"我周五要干嘛来着"答得上
+5. 发现的 backlog（如有）
+
+**绝对禁止**：merge/push 到 main、ssh 生产服务器做任何写操作、跑 release-app.sh。
 
 ### 交付物清单
-代码 + 单测 + E2E 脚本更新 + `04-决策记录.md` 追加一条（含 solo 语义定义与"切换不迁移历史"的明示）+ `HANDOFF.md` 版本段刷新 + `docs/ROADMAP.md` 状态更新 + commit/push（格式 `feat: v0.15.0 R3.5 记忆开箱即用——单人模式+引导闭环+对话历史/owner点选`，**不加 Co-Authored-By**）+ 最终验收报告（中文，含川哥真机验收脚本，署名格式：`署名：<你的名字>（<引擎>）| 完成时间`）。
+代码 + 单测 + E2E 脚本更新 + `04-决策记录.md` 追加一条（含 solo 语义定义与"切换不迁移历史"的明示）+ `HANDOFF.md` 版本段刷新 + `docs/ROADMAP.md` 状态更新 + commit 到 worktree 分支（格式 `feat: v0.15.0 R3.5 记忆开箱即用——单人模式+引导闭环+对话历史/owner点选`，**不加 Co-Authored-By，不 push 不 merge**）+ 最终验收报告（中文，含川哥真机验收脚本，署名格式：`署名：<你的名字>（<引擎>）| 完成时间`）。
 
 ### 禁止事项
 - 不改 memory-core 检索内核、KWS、音乐、提醒本体。
