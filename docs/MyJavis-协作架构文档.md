@@ -421,3 +421,16 @@ cd ~/myjavis-vision && git add contracts \
 ---
 
 *本文档随架构演进更新,更新记录写入 core 仓 git 历史。*
+
+---
+
+## 10. 变更记录
+
+### v1.1(2026-07-08,Owner 拍板,覆盖正文对应条款)
+
+1. **core 仓不迁 org、不改名**(覆盖 §1.1"不使用个人账号仓库"、§1.2 表首行、§9.A step 1):core = Owner 个人账号仓 `MyJavis`,原地保留。理由:core 永不加协作者,留在个人账号隔离性更强——协作者在 org 成员视角下连 core 的存在都看不到。协作仓(myjavis-vision 及未来各线)统一放 org `FUTURUS-ProductResearch`。
+2. **GitHub 计划:使用免费版**(实测 2026-07-08:免费版 org **私有仓**的分支保护与 Ruleset 均被 403 拒,需 Pro/公开仓)。因此 §2.1 的"main 分支保护 / Require PR review"在免费版不可强制,对策:
+   - 流程纪律:协作仓 CLAUDE.md/README 明写"一律走 PR,禁止直推 main",入职宣讲;
+   - 审计兜底:Owner 定期查 main 直推记录(`git log --first-parent main`,非 merge commit 即违规);
+   - 损失面评估:协作仓即使被直推破坏,可 revert;核心资产全部在 core,结构隔离不受影响(原则一仍成立)。
+3. **契约 v0.1 已立**:`contracts/vision/`(四要素)+ `CONTRACT_VERSION`(vision=0.1.0)+ `scripts/sync-contracts.sh`;协作仓 myjavis-vision 已按 §8 SOP 建立(白名单填充 + 泄露自查零命中 + 零 secret CI)。
