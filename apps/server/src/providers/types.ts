@@ -52,6 +52,16 @@ export interface ChatTurn {
   content: string;
 }
 
+/** OpenAI 兼容 function-calling 工具定义（tools 数组元素）。 */
+export interface LlmToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
 export interface LlmStreamArgs {
   systemPrompt: string;
   userText: string;
@@ -62,9 +72,13 @@ export interface LlmStreamArgs {
    * assistant 说过"认错了"，LLM 就无视 system 尾部身份段继续说不认识）。
    */
   contextNote?: string;
+  /** 本轮可用工具（如 music_control）。带工具时按 Gate1 探测结论走单路（见 llm.ts），不赛马。 */
+  tools?: LlmToolDef[];
   onDelta: (chunk: string) => void;
   onDone: (full: string) => void;
   onError?: (err: Error) => void;
+  /** 流式 tool_call 聚合完成（finish_reason=tool_calls 或流结束）时触发；argsJson 为原始未解析字符串。 */
+  onToolCall?: (name: string, argsJson: string) => void | Promise<void>;
   signal?: AbortSignal; // 支持 barge-in 中断
 }
 

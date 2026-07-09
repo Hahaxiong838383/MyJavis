@@ -19,6 +19,7 @@
     "test:correction": "tsx scripts/correction.test.ts",
     "test:governance": "tsx scripts/governance.test.ts",
     "test:music": "tsx scripts/music.test.ts",
+    "test:music-fc": "tsx scripts/music-fc.test.ts",
     "test:prompt-injection": "tsx scripts/prompt-injection.test.ts",
     "smoke:memory": "tsx scripts/smoke-memory.ts",
     "eval:phase0": "tsx eval/runner.ts && tsx eval/metrics.ts",

@@ -1,0 +1,27 @@
+case	期望	provider	实际action	是否调用工具	speakable_ms	回复文本首30字
+我们换一个话题	no-call	DeepSeek(main)	none	否	608	好的，不聊这个了。你想换个什么话题？
+停一下我想想	no-call	DeepSeek(main)	none	否	552	好的，不打扰你。
+你说话大声一点	no-call	DeepSeek(main)	louder	是	865	好的，我马上把音量调大。
+上一个问题你还没答	no-call	DeepSeek(main)	none	否	504	不好意思，不过我没找到上一个问题的记录。你能再问一遍吗？
+继续说啊	no-call	DeepSeek(main)	none	否	387	好的，我继续讲。不过现在房间里在放《夜曲》，你是想先聊别的，
+别停，我听着呢	no-call	DeepSeek(main)	resume	是	564	好的，继续播放。
+把灯关了	no-call	DeepSeek(main)	none	否	341	好的，帮你关灯。  不过我得先说明一下，我目前只能控制音乐播
+这个方案先暂停推进	no-call	DeepSeek(main)	none	否	600	好的，先放一放，休息一下。需要帮你把音乐暂停吗？
+换个说法	no-call	DeepSeek(main)	none	否	426	好的，换成《夜曲》。
+声音这个词怎么写	no-call	DeepSeek(main)	none	否	444	声音，就是声音的声，声音的音。两个字拆开的话，声是上面一个士
+暂停	pause	DeepSeek(main)	pause	是	835	好嘞，暂停。
+停止播放	pause	DeepSeek(main)	pause	是	890	好嘞，暂停。
+别放了	pause	DeepSeek(main)	pause	是	858	好嘞，暂停。
+换一首	next	DeepSeek(main)	next	是	718	换一首，给你放《夜曲》
+下一首	next	DeepSeek(main)	next	是	806	换一首，给你放《夜曲》
+切歌	next	DeepSeek(main)	next	是	1031	换一首，给你放《夜曲》
+继续播	resume	DeepSeek(main)	resume	是	473	好的，继续播放。
+接着放	resume	DeepSeek(main)	resume	是	468	好的，继续播放。
+大声点	louder	DeepSeek(main)	louder	是	839	调大声点。
+小声一点	quieter	DeepSeek(main)	quieter	是	812	小声点。
+上一首	prev	DeepSeek(main)	prev	是	772	前面没有别的歌啦，这就是第一首～
+这歌太吵了	n/a(不设硬门槛)	DeepSeek(main)	quieter	是	540	好的，我调小一点音量。
+换个安静点的	n/a(不设硬门槛)	DeepSeek(main)	pause	是	539	好的，我把音乐暂停。
+声音有点小听不清	n/a(不设硬门槛)	DeepSeek(main)	louder	是	574	好的，我帮你把音量调大一点。
+别放这首了	n/a(不设硬门槛)	DeepSeek(main)	next	是	736	换一首，给你放《夜曲》
+就这首挺好别换	n/a(不设硬门槛)	DeepSeek(main)	none	否	811	行，那就继续放着。

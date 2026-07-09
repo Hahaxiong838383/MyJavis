@@ -179,6 +179,7 @@ async function streamOne(
       temperature: temperature(),
       max_tokens: maxTokensFor(ep.model),
       ...(thinkingDisabled() ? { thinking: { type: 'disabled' } } : {}),
+      ...(args.tools?.length ? { tools: args.tools, tool_choice: 'auto' } : {}),
       messages: [
         { role: 'system', content: args.systemPrompt },
         ...args.history,
@@ -202,6 +203,8 @@ async function streamOne(
   let buffer = '';
   let full = '';
   let claimed = false;
+  // 流式 tool_call 缓冲（按 index 聚合分片 arguments）——绝不进 content 流，TTS 安全红线。
+  const toolCalls = new Map<number, { name?: string; args: string }>();
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -217,18 +220,41 @@ async function streamOne(
       if (!chunk || chunk === '[DONE]') continue;
       try {
         const evt = JSON.parse(chunk) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              tool_calls?: Array<{ index: number; function?: { name?: string; arguments?: string } }>;
+            };
+          }>;
         };
-        const delta = evt.choices?.[0]?.delta?.content;
-        if (!delta) continue;
-        const visible = sanitize.process(stripThink(delta));
-        if (!visible) continue;
-        if (!claimed) {
-          if (!claim()) return; // 另一路已胜出，本路静默退出（对方会 abort 本路）
-          claimed = true;
+        const delta = evt.choices?.[0]?.delta;
+        const rawContent = delta?.content;
+        const toolDeltas = delta?.tool_calls;
+
+        if (rawContent) {
+          const visible = sanitize.process(stripThink(rawContent));
+          if (visible) {
+            if (!claimed) {
+              if (!claim()) return; // 另一路已胜出，本路静默退出（对方会 abort 本路）
+              claimed = true;
+            }
+            full += visible;
+            args.onDelta(visible);
+          }
         }
-        full += visible;
-        args.onDelta(visible);
+        // 赛马裁决扩展（Gate1 结论）：首个 tool_call delta 与首个 content delta 同等视为「开口」。
+        if (toolDeltas?.length) {
+          if (!claimed) {
+            if (!claim()) return;
+            claimed = true;
+          }
+          for (const tc of toolDeltas) {
+            const buf = toolCalls.get(tc.index) ?? { args: '' };
+            if (tc.function?.name) buf.name = tc.function.name;
+            if (tc.function?.arguments) buf.args += tc.function.arguments;
+            toolCalls.set(tc.index, buf);
+          }
+        }
       } catch {
         /* 忽略噪声 chunk */
       }
@@ -243,6 +269,12 @@ async function streamOne(
     full += tail;
     args.onDelta(tail);
   }
+  // tool_call 聚合完成（流已结束才触发，OpenAI 语义上 finish_reason=tool_calls 后流即终止）。
+  if (args.onToolCall) {
+    for (const buf of toolCalls.values()) {
+      if (buf.name) await args.onToolCall(buf.name, buf.args);
+    }
+  }
   if (claimed) args.onDone(full.trim());
   else if (claim()) args.onDone(full.trim()); // 空回复也算完成（极罕见），避免整轮悬空
 }
@@ -255,7 +287,10 @@ class OpenAiCompatLlm implements LlmProvider {
       apiKey: config.llm.apiKey,
       model: config.llm.model,
     };
-    const fb = fallbackEndpoint();
+    // Gate1 探测结论（docs/gate1-probe-evidence.md）：仅 DeepSeek(main) 流式 FC 可靠——
+    // MiniMax 撞词误触发（"别停，我听着呢"→误调 resume）+ tool_call 延迟 1.4-3.5s（超 speakable_ms 门槛）。
+    // 按 §4.4「仅一家可靠」分支：带 tools 的轮次退化为单路（不赛马）；无 tools 轮维持双路赛马不变。
+    const fb = args.tools?.length ? null : fallbackEndpoint();
     const started = performance.now();
 
     // 每路独立 controller；外部 barge-in signal 传播到所有路。

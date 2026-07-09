@@ -106,7 +106,7 @@ import {
   timeRetryLine,
 } from '../reminder/intent.js';
 import { reminderStore } from '../reminder/store.js';
-import type { ChatTurn } from '../providers/types.js';
+import type { ChatTurn, LlmToolDef } from '../providers/types.js';
 import type { RecallResult, VolcSpeakerPayload } from '../memory/types.js';
 
 const customLlmRoute = new Hono();
@@ -139,6 +139,7 @@ function extractText(content: unknown): string {
 }
 
 customLlmRoute.post('/chat/completions', async (c) => {
+  const requestStartMs = performance.now(); // speakable_ms 起点（FC PoC 观测，见 §4.5）
   // 可选鉴权：配了 CUSTOM_LLM_API_KEY 就校验 Bearer（须与火山 CustomLLM.APIKey 一致）；未配则放行（本地验证方便）。
   const requiredKey = process.env.CUSTOM_LLM_API_KEY?.trim();
   if (requiredKey) {
@@ -328,6 +329,14 @@ customLlmRoute.post('/chat/completions', async (c) => {
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: musicCanned });
   }
 
+  // FC（function calling）音乐控制路由（MUSIC_FC_ENABLED，默认关）：控制类正则已在
+  // resolveMusicCanned 里让位（见其 control 分支），走到这里说明要交给本次 LLM 调用裁决——
+  // 只有房间有活跃音乐会话才注入工具 + 播放状态 contextNote（无会话=没歌可控，不必注入）。
+  const musicRoomId = config.music.fcEnabled && sessionId ? sessionId : undefined;
+  const musicSession = musicRoomId ? getMusicSession(musicRoomId) : undefined;
+  const musicTools = musicSession ? [MUSIC_CONTROL_TOOL] : undefined;
+  const musicContextNote = musicSession ? buildMusicContextNote(musicSession) : undefined;
+
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
   const created = Math.floor(Date.now() / 1000);
@@ -352,6 +361,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
     enqueue(chunk({ role: 'assistant', content: '' }, null)); // OpenAI 规范：首 chunk 带 role
     try {
       let assistantText = '';
+      // 本轮 LLM 是否真正开口说过话（区分于下面的承接句 filler——filler 是 LLM 开始前的合成
+      // 占位，不代表模型自己的表态）。FC 工具调用后决定 ack 用哪句话时只看这个，不看 filler。
+      let llmSpoke = false;
+      // FC 轮主路失败暂存（onError 是同步回调没法 await 降级执行，延后到 streamChat 返回后处理）
+      let llmFailedError: Error | null = null;
       // 承接句：waitMs=0 同步直插（省 setTimeout 宏任务延迟，SSE 首块即承接句）；
       // >0 时为自适应窗口（LLM 首字先到则不插）。见 fillers.ts。
       let firstTokenSeen = false;
@@ -371,15 +385,53 @@ customLlmRoute.post('/chat/completions', async (c) => {
         systemPrompt,
         userText,
         history,
-        contextNote: contextNoteText,
+        contextNote: [contextNoteText, musicContextNote].filter(Boolean).join('\n\n') || undefined,
+        tools: musicTools,
         onDelta: (delta) => {
           if (!firstTokenSeen) {
             firstTokenSeen = true;
             if (fillerTimer) clearTimeout(fillerTimer);
           }
+          llmSpoke = true;
           turnTrace.markLlmFirstToken();
           assistantText += delta;
           enqueue(chunk({ content: delta }, null));
+        },
+        onToolCall: async (name, argsJson) => {
+          // 只在有活跃音乐会话时才会被调用到（此时 musicRoomId 必已判真，见上方注入条件）；
+          // 早退纯为 TS 类型收窄，非预期分支。
+          if (!musicRoomId) return;
+          // abort 守卫（cc 验收补）：火山弃用本轮（interim 被 final 取代 / barge-in）时副作用
+          // 绝不执行——半句 interim 触发的音量/切歌用户根本没听到 ack，属静默误操作。
+          if (c.req.raw.signal.aborted) {
+            console.log(`[music-fc] session=${musicRoomId} tool_call discarded (aborted), side-effect skipped`);
+            return;
+          }
+          if (name !== 'music_control') {
+            console.log(`[music-fc] session=${musicRoomId} unknown tool="${name}" ignored`);
+            return;
+          }
+          const action = parseMusicControlAction(argsJson);
+          if (!action) {
+            console.log(`[music-fc] session=${musicRoomId} invalid action args="${argsJson.slice(0, 80)}" ignored（宁漏勿误）`);
+            return;
+          }
+
+          const ackText = await executeMusicControl(musicRoomId, action);
+
+          // ack 文案（§4.3）：LLM 本轮已真正开口就用它的话；没开口才用上面生成的固定/动态
+          // ack——不做二轮 LLM 调用（保延迟）。
+          if (!llmSpoke && ackText) {
+            if (!firstTokenSeen) {
+              firstTokenSeen = true;
+              if (fillerTimer) clearTimeout(fillerTimer);
+            }
+            assistantText += ackText;
+            enqueue(chunk({ content: ackText }, null));
+          }
+          console.log(
+            `[music-fc] session=${musicRoomId} tool=music_control action=${action} speakable_ms=${Math.round(performance.now() - requestStartMs)}`,
+          );
         },
         onDone: () => {
           // abort 守卫：火山弃用本次调用（Prefill 的 interim 版被 final 取代 / barge-in）时会断开
@@ -444,10 +496,40 @@ customLlmRoute.post('/chat/completions', async (c) => {
           if (discarded) console.log(`[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`);
           enqueue(chunk({}, 'stop'));
         },
-        onError: (err) => enqueue(chunk({ content: `（助手出错了：${err.message}）` }, 'stop')),
+        onError: (err) => {
+          // FC 轮（带 tools=单路 DeepSeek）主路失败：不立即报错，延后到 streamChat 返回后
+          // 走正则降级链（见下方 llmFailedError 处理）——控制指令的可用性不因单路故障归零。
+          if (musicTools) {
+            llmFailedError = err;
+            return;
+          }
+          enqueue(chunk({ content: `（助手出错了：${err.message}）` }, 'stop'));
+        },
       });
+      // FC 轮主路失败降级链（PoC 遗留问题2 收口）：LLM 全程没开腔且真失败 → 意图正则兜底
+      // 执行控制指令（与 FC off 的旧行为等价）；非控制意图（闲聊）没法降级，如实报错。
+      // （as 断言绕过 TS 闭包收窄误判：onError 回调里的赋值它看不见，if 内会推成 never）
+      const failedErr = llmFailedError as Error | null;
+      if (failedErr) {
+        let fallbackAck: string | null = null;
+        const fallbackIntent = detectMusicIntent(userText);
+        if (musicRoomId && fallbackIntent?.kind === 'control' && !c.req.raw.signal.aborted) {
+          fallbackAck = await executeMusicControl(musicRoomId, fallbackIntent.action);
+          console.log(`[music-fc] session=${musicRoomId} main route failed → regex fallback action=${fallbackIntent.action}`);
+        }
+        enqueue(chunk({ content: fallbackAck ?? `（助手出错了：${failedErr.message}）` }, 'stop'));
+      }
     } catch (err) {
-      enqueue(chunk({ content: `（助手暂时连不上大脑：${(err as Error)?.message ?? err}）` }, 'stop'));
+      // FC 轮走到 catch（streamChat 整体抛出）同样先试控制指令降级
+      let fallbackAck: string | null = null;
+      if (musicTools && musicRoomId && !c.req.raw.signal.aborted) {
+        const fallbackIntent = detectMusicIntent(userText);
+        if (fallbackIntent?.kind === 'control') {
+          fallbackAck = await executeMusicControl(musicRoomId, fallbackIntent.action);
+          console.log(`[music-fc] session=${musicRoomId} streamChat threw → regex fallback action=${fallbackIntent.action}`);
+        }
+      }
+      enqueue(chunk({ content: fallbackAck ?? `（助手暂时连不上大脑：${(err as Error)?.message ?? err}）` }, 'stop'));
     }
     enqueue('[DONE]'); // 火山要求的终止符
     await chain;
@@ -708,6 +790,85 @@ function resolveReminderCanned(
  * 命中后直出话术 + 通过 pending-store 通知前端播放/控制。
  * 仅当 MUSIC_ORCHESTRATOR_URL 配置时启用，否则优雅返回 null。
  */
+
+const MUSIC_CONTROL_ACTIONS = ['pause', 'resume', 'next', 'prev', 'louder', 'quieter'] as const;
+export type MusicControlAction = (typeof MUSIC_CONTROL_ACTIONS)[number];
+const MUSIC_CONTROL_ACTION_SET = new Set<string>(MUSIC_CONTROL_ACTIONS);
+
+/** FC 音乐控制工具定义（§4.2，设计已定稿，勿改 action 枚举/文案）。导出供测试。 */
+export const MUSIC_CONTROL_TOOL: LlmToolDef = {
+  type: 'function',
+  function: {
+    name: 'music_control',
+    description:
+      "控制正在播放的音乐。仅当用户明确想操作音乐播放时调用；聊天中提到相关字眼（如'换一个话题''停一下我想想'）不要调用。用户让'你'（助手）说话大声点/小声点（如'你说话大声一点''你声音小点'）说的是助手自己说话的音量，与音乐无关，不要调用。",
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: [...MUSIC_CONTROL_ACTIONS],
+          description: 'pause=暂停 resume=继续播 next=换一首/下一首 prev=上一首 louder=大声点 quieter=小声点',
+        },
+      },
+      required: ['action'],
+    },
+  },
+};
+
+/**
+ * 解析 + 校验 music_control 工具调用的 arguments JSON（§4.3：action 不在枚举 / JSON 解析
+ * 失败一律忽略工具调用，宁漏勿误）。导出供测试。
+ */
+export function parseMusicControlAction(argsJson: string): MusicControlAction | null {
+  let action: string | undefined;
+  try {
+    action = (JSON.parse(argsJson) as { action?: string }).action;
+  } catch {
+    return null;
+  }
+  return action && MUSIC_CONTROL_ACTION_SET.has(action) ? (action as MusicControlAction) : null;
+}
+
+/**
+ * 执行音乐控制动作并返回 ack 话术——FC onToolCall 与「主路失败正则降级链」共用
+ * （逻辑与旧正则 control 分支等价：next/prev 真换歌，pause/resume/音量走前端 pending 通道）。
+ * 导出供测试。
+ */
+export async function executeMusicControl(roomId: string, action: MusicControlAction): Promise<string> {
+  if (action === 'next') {
+    // 复用现有 next 逻辑（§3 代码地图）：lastQuery 重搜、排除已放过的，真换一首。
+    const ms = getMusicSession(roomId);
+    if (!ms?.lastQuery) return '现在还没在放歌呢，想听什么跟我说～';
+    const playRes = await musicPlay(ms.lastQuery, roomId, ms.playedIds);
+    return handlePlayResult(roomId, ms.lastQuery, playRes, '换一首，给你放');
+  }
+  if (action === 'prev') {
+    // 复用现有 prev 逻辑：播放历史栈真回上一曲。
+    const prev = takePrevTrack(roomId);
+    if (!prev) return '前面没有别的歌啦，这就是第一首～';
+    const ms = getMusicSession(roomId);
+    const playRes = await musicPlayById(prev, roomId);
+    return handlePlayResult(roomId, ms?.lastQuery || prev.title, playRes, '回上一首，放');
+  }
+  // pause/resume/louder/quieter：前端 <audio> 控制，走既有 pending 通道。
+  setPending(roomId, { action: 'control', control: action });
+  const acks: Record<string, string> = {
+    pause: '好嘞，暂停。',
+    resume: '继续播～',
+    louder: '调大声点。',
+    quieter: '小声点。',
+  };
+  return acks[action] ?? '好。';
+}
+
+/** 播放状态 contextNote（§4.2，拼进现有 contextNote 链）：取播放历史栈栈顶（当前曲）标题，无则回退搜索 query。导出供测试。 */
+export function buildMusicContextNote(session: NonNullable<ReturnType<typeof getMusicSession>>): string {
+  const current = session.playedTracks[session.playedTracks.length - 1];
+  const title = current?.title ?? session.lastQuery;
+  return `[系统状态] 当前房间正在播放音乐：《${title}》。用户若想暂停/继续/换歌/调音量，调用 music_control；普通聊天正常回复，别把聊天字眼当指令。`;
+}
+
 /**
  * B 站标题又臭又长——播报/反问时剪短。
  * 优先级：query 本身出现在标题里 → 直接报 query（"夜曲"）；含 query 的《》段；截前 18 字。
@@ -889,6 +1050,9 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
     // （"停一下我想想""说大声一点"）→ 走 LLM 正常对话。放过歌后控制词才算音乐指令
     // （已暂停/放完时"继续播/换一首"仍合理）。发起类（play/play_generic）不门控。
     if (!getMusicSession(roomId)) return null;
+    // FC 开启（MUSIC_FC_ENABLED=1，PoC）：正则让位，语义裁决全权交主 LLM function calling
+    // （见 §4.1）——返回 null 落到常规 LLM 调用，custom-llm.ts 路由处会注入 tools + contextNote。
+    if (config.music.fcEnabled) return null;
     // "换一首/下一首"：用上次的 query 重搜、排除已放过的，真换一首歌（不是空 stub）
     if (intent.action === 'next') {
       const ms = getMusicSession(roomId);

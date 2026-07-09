@@ -46,6 +46,28 @@ export interface MusicStatusResult {
 
 const DEFAULT_TIMEOUT = 4500;
 
+/**
+ * 测试 / Gate2 数据脚本专用 stub 开关（默认关，生产行为不变）：项目铁律「测试中不许真调
+ * B 站/音乐 orchestrator 搜索」（见 IMPL-音乐意图AI化-PROMPT.md §4.4）。只影响 FC 控制路径
+ * 实际会触发网络调用的 musicPlay/musicPlayById（next/prev 换歌），其余函数不受影响。
+ */
+const STUB = process.env.MUSIC_ORCHESTRATOR_STUB === '1';
+
+function stubPlayResult(query: string, track?: { id: string; source: string; title?: string }): MusicPlayResult {
+  return {
+    status: 'playing',
+    track: {
+      id: track?.id ?? `stub-${query}`,
+      source: track?.source ?? 'stub',
+      // 裸标题不带《》：调用方（shortTitle/handlePlayResult/buildMusicContextNote）自己按需加书名号，
+      // 这里带了会被套两层（真机曾出现"《《夜曲》》"污染 contextNote 的问题）。
+      title: track?.title ?? query,
+      artist: 'Stub Artist',
+    },
+    stream_url: '/stub/stream.mp3',
+  };
+}
+
 function getHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (config.music.apiKey) h['X-Music-Key'] = config.music.apiKey;
@@ -112,6 +134,7 @@ export async function musicPlay(
   sessionId: string,
   excludeIds?: string[],
 ): Promise<MusicPlayResult | null> {
+  if (STUB) return stubPlayResult(query);
   return postJson<MusicPlayResult>('/tools/music_play', {
     query,
     mode: 'track',
@@ -125,6 +148,7 @@ export async function musicPlayById(
   track: { id: string; source: string; title?: string },
   sessionId: string,
 ): Promise<MusicPlayResult | null> {
+  if (STUB) return stubPlayResult(track.title ?? track.id, track);
   return postJson<MusicPlayResult>('/tools/music_play', {
     query: track.title ?? track.id,
     mode: 'track',
