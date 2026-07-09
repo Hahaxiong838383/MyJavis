@@ -18,6 +18,7 @@ v0.10.0 内测阶段全项目盘点结论：四层架构（语音 I/O/声纹/记
 | P1 | 判停 1000ms 真机体感复测 | 2026-07-07 才真生效（pm2 快照坑），川哥用两天反馈 | 零 | ⬜ 等反馈 |
 | P2 | 记忆架构两层化 R1-R4 | **App 内隐私 vault（tauri-plugin-sql+jieba-wasm+分层记忆）+ 云端长线层，同构双部署（共享包 @myjavis/memory-core）**；方案定稿 [memory-architecture.md](./memory-architecture.md)（2026-07-07 川哥拍板，Ollama 档不做）。**R1+R1.1 ✅ v0.12.0**（云端检索相关性化+召回预览+版本对齐）**R2 ✅ v0.13.0**（本机隐私 vault：分类器三层锚点+hold/拉/焚+session-context 通话注入分人红线+脱敏三道防线含 assistant 复述+tray 常驻+登录自启开关；提炼代理挪 R4）**R3 ✅ v0.14.0**（bi-temporal 失效保历史+LLM 批处理精修+「记忆活动」实时面板(川哥点名)+疑问句防误抽当场修）**R3.5 ✅ v0.15.0**（记忆体验断裂修复：生产实锤零声纹租户记忆全不工作——单人模式默认开箱即用+引导闭环口头提醒+治理面板owner点选+对话历史面板新UI，详见 04-决策记录.md 2026-07-08）→ R4 异步巩固+本机提炼代理(~1.5d)。backlog：vault Mini 加密备份 | 中大 | 🔄 R1-R3.5 完成 |
 | P2 | 音乐体验包 | 搜索 ranking 音乐向/播完自动下一首/循环随机/音量绝对值/收藏（详见 music-orchestrator TODO.md P1） | 中 | ⬜ |
+| P2 | ⭐ 意图路由 AI 化 M1（音乐控制 FC PoC） | 撞词根治终局（2026-07-08 川哥拍板）：音乐控制类正则 → 主 LLM function calling，播放状态注入上下文由 LLM 语义裁决（同一次调用零额外延迟）；**边界：reminder 时间解析 / enroll 状态机保持规则（确定性红线，不 AI 化）**。PoC 先验三风险：赛马×流式 FC 兼容 / tool_call 不漏 TTS / 控制指令延迟实测，数据说话再全量。委派 prompt：[IMPL-音乐意图AI化-PROMPT.md](./IMPL-音乐意图AI化-PROMPT.md) | 中（PoC ~1d） | ⬜ prompt 已备 |
 | P2 | 高风险实体确认流 | 手机号/地址/健康/金额复述后才 committed（HANDOFF P1-7） | 小中 | ⬜ |
 | P3 | 租户使用观测 | 谁在用/记忆增长/错误率小看板，指导内测迭代 | 小 | ⬜ |
 | P3 | 冷路径 Autodreaming 轻量版 | 夜间对账+过期清理+pref_summary 收敛；等观测数据说明必要性再上 | 中 | ⬜ |
