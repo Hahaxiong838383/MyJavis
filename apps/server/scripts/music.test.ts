@@ -25,6 +25,15 @@ assert.equal((detectMusicIntent('上一首') as { action: string }).action, 'pre
 assert.equal((detectMusicIntent('换一首吧') as { action: string }).action, 'next');
 assert.equal((detectMusicIntent('停止播放') as { action: string }).action, 'pause');
 
+// —— 闲聊撞词反例（2026-07-08 川哥真机："我们换一个话题"被回"还没放歌"） ——
+// 无音乐锚定的"换一个/换一换/上一个"已从正则剔除；有锚定的指令不受影响。
+assert.equal(detectMusicIntent('我们换一个话题'), null, '换话题是闲聊不是切歌');
+assert.equal(detectMusicIntent('换一个说法呢'), null, '换说法不是切歌');
+assert.equal(detectMusicIntent('上一个问题你还没回答'), null, '上一个问题不是上一曲');
+assert.equal((detectMusicIntent('换一首') as { action: string }).action, 'next', '带歌曲锚定仍是切歌');
+assert.equal((detectMusicIntent('切歌') as { action: string }).action, 'next');
+assert.equal((detectMusicIntent('上一曲') as { action: string }).action, 'prev');
+
 // —— music-session：播放历史栈（真"上一首"） ——
 const room = 'test-prev-room';
 const T = (n: number) => ({ id: `id${n}`, source: 'bilibili', title: `歌${n}` });

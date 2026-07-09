@@ -885,6 +885,10 @@ async function resolveMusicCanned(roomId: string | undefined, userText: string):
   }
 
   if (intent.kind === 'control') {
+    // 播放状态门控（2026-07-08 川哥拍板）：这个房间从没放过歌 → 控制词大概率是闲聊撞词
+    // （"停一下我想想""说大声一点"）→ 走 LLM 正常对话。放过歌后控制词才算音乐指令
+    // （已暂停/放完时"继续播/换一首"仍合理）。发起类（play/play_generic）不门控。
+    if (!getMusicSession(roomId)) return null;
     // "换一首/下一首"：用上次的 query 重搜、排除已放过的，真换一首歌（不是空 stub）
     if (intent.action === 'next') {
       const ms = getMusicSession(roomId);
