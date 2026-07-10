@@ -65,7 +65,8 @@ export const config = {
     apiKey: opt('MUSIC_ORCHESTRATOR_KEY', ''),
     streamPublicBase: opt('MUSIC_STREAM_PUBLIC_BASE', ''),
     enabled: Boolean(opt('MUSIC_ORCHESTRATOR_URL', '')),
-    /** 音乐控制意图 function calling PoC 开关（默认关，回退保障）。见 docs/IMPL-音乐意图AI化-PROMPT.md。 */
-    fcEnabled: opt('MUSIC_FC_ENABLED', '0') === '1',
+    /** 音乐控制意图 function calling（2026-07-09 灰度转正：默认开）。开关保留为运维
+     *  kill switch——DeepSeek 大面积故障期可设 0 秒回正则版。见 docs/IMPL-音乐意图AI化-PROMPT.md。 */
+    fcEnabled: opt('MUSIC_FC_ENABLED', '1') === '1',
   },
 } as const;
