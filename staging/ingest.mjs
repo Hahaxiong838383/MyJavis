@@ -8,7 +8,7 @@ import path from 'node:path';
 const PORT = Number(process.env.PORT || 3002);
 const KEYS_FILE = process.env.KEYS_FILE || '/opt/myjavis-staging/keys.json';
 const LOG_DIR = process.env.LOG_DIR || '/opt/myjavis-staging/logs';
-const CONTRACT_VERSION = '0.1.0';
+const CONTRACT_VERSION = '0.2.0';
 
 const REQUIRED = ['v', 'type', 'seq', 'session_id', 'ts_mono_ms', 'ts_wall_ms', 'payload'];
 const TYPES = new Set(['hello', 'heartbeat', 'event', 'semantic']);
