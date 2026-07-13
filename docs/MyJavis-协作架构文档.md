@@ -434,3 +434,11 @@ cd ~/myjavis-vision && git add contracts \
    - 审计兜底:Owner 定期查 main 直推记录(`git log --first-parent main`,非 merge commit 即违规);
    - 损失面评估:协作仓即使被直推破坏,可 revert;核心资产全部在 core,结构隔离不受影响(原则一仍成立)。
 3. **契约 v0.1 已立**:`contracts/vision/`(四要素)+ `CONTRACT_VERSION`(vision=0.1.0)+ `scripts/sync-contracts.sh`;协作仓 myjavis-vision 已按 §8 SOP 建立(白名单填充 + 泄露自查零命中 + 零 secret CI)。
+
+### v1.2(2026-07-09,Owner 拍板:视觉线端侧集成形态)
+
+1. **vision 运行位 = 端侧**(适配 §6.2/§6.3 的"镜像部署"假设):视觉感知需采本机摄像头,生产运行位是用户端(macOS app,未来 RK3588 边缘盒),VPS staging 仅为契约联调环境,不是运行位。
+2. **交付物形态 = 单二进制可执行体,作为 Tauri sidecar 随 MyJavis.app 分发**:app 启动时拉起 sidecar,本地采帧、本地推理,只对外产出 PerceptionEvent——"原始帧永不离开本机"由进程边界结构化保证(原则一)。技术栈选型硬约束:必须能编译/打包为单个可执行文件(Go/Rust 原生,Node 可 pkg/SEA,Python 可 PyInstaller,实习生自选)。
+3. **CI 制品走 GitHub Releases 替代 GHCR**(免费私有仓可用):`v*` tag → Release 附二进制,日常 merge 用 Actions artifact(`main-<sha>` 语义)。隔离等价:vision 仓 `GITHUB_TOKEN` 天然只能发本仓 Release,拉不到 core 任何东西(§2.2 精神不变)。
+4. **app 组装落地版**(§6.2 三段流水线适配 MyJavis 现实=pm2+rsync+Tauri dmg 而非 compose):core 仓 `release/`(versions.lock + build.sh + smoke)**于 vision 首个 v0.1 tag 后建立**;build.sh = 读 lock → 拉 vision Release 附件 → CONTRACT_VERSION 互校 → 塞入 Tauri bundle(externalBin)→ smoke → 接现有 release-app.sh 出 dmg + 自动更新。回滚仍 = revert lock 一个文件。
+5. §6.4 不变:实习生九成场景不需要完整 app;需看整机行为时给编译后的 dmg,不给组装能力。
