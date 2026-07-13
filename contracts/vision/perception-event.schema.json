@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "myjavis/contracts/vision/perception-event/0.1.0",
+  "$id": "myjavis/contracts/vision/perception-event/0.2.0",
   "title": "PerceptionEvent",
   "type": "object",
   "required": ["v", "type", "seq", "session_id", "ts_mono_ms", "ts_wall_ms", "payload"],
@@ -20,17 +20,51 @@
       "properties": {
         "presence": { "type": "boolean" },
         "attention": { "enum": ["screen", "away", "unknown"] },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "face": { "$ref": "#/$defs/face" }
+      }
+    },
+    "face": {
+      "type": "object",
+      "properties": {
+        "emotion": {
+          "type": "object",
+          "required": ["label"],
+          "properties": {
+            "label": { "enum": ["neutral", "happy", "sad", "angry", "surprised", "confused", "tired"] },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "headPose": {
+          "type": "object",
+          "required": ["pitch", "yaw", "roll"],
+          "properties": {
+            "pitch": { "type": "number" },
+            "yaw": { "type": "number" },
+            "roll": { "type": "number" }
+          }
+        },
+        "attrs": {
+          "type": "object",
+          "properties": {
+            "eyesOpen": { "type": "boolean" },
+            "mouthOpen": { "type": "boolean" },
+            "glasses": { "type": "boolean" }
+          }
+        }
       }
     },
     "event": {
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["gesture", "gaze_shift", "person_enter", "person_leave"] },
+        "kind": { "enum": ["gesture", "gaze_shift", "person_enter", "person_leave", "head_tilt", "expression_change", "head_nod", "head_shake"] },
         "gesture": { "enum": ["palm", "thumbs_up", "fist"] },
-        "from": { "enum": ["screen", "away", "unknown"] },
-        "to": { "enum": ["screen", "away", "unknown"] },
+        "phase": { "enum": ["start", "end"] },
+        "direction": { "enum": ["left", "right"] },
+        "angle": { "type": "number" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     },
