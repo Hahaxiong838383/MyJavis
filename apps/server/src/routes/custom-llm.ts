@@ -109,6 +109,7 @@ import { reminderStore } from '../reminder/store.js';
 import type { ChatTurn, LlmToolDef } from '../providers/types.js';
 import type { RecallResult, VolcSpeakerPayload } from '../memory/types.js';
 import { resolvePublicVoicePolicy } from '../public-voice/policy.js';
+import { resolvePublicVoiceTuning } from '../public-voice/tuning.js';
 
 const customLlmRoute = new Hono();
 
@@ -388,7 +389,8 @@ customLlmRoute.post('/chat/completions', async (c) => {
           console.log(`[filler] inserted "${filler}" (wait=${fillerConfig.waitMs}ms)`);
         }
       };
-      const fillerWanted = fillerConfig.enabled && Boolean(userText.trim());
+      const fillerWanted =
+        (publicPolicy ? resolvePublicVoiceTuning().fillerEnabled : fillerConfig.enabled) && Boolean(userText.trim());
       if (fillerWanted && fillerConfig.waitMs <= 0) insertFiller();
       const fillerTimer = fillerWanted && fillerConfig.waitMs > 0 ? setTimeout(insertFiller, fillerConfig.waitMs) : null;
       await llm.streamChat({

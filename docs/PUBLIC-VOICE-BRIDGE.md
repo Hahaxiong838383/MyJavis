@@ -43,6 +43,13 @@ SERVICE_NAME=myjavis-ccsite
 | `POST /public-voice/start` | 使用可信服务端 prompt 创建公开 RTC 会话 |
 | `POST /public-voice/stop` | 回收指定公开 RTC 会话 |
 
+## Web 对话调优
+
+公开浏览器会话不继承私有 MyJavis 房间的高延迟参数。默认关闭 Prefill、AIVAD 和即时承接句，
+使用 `500ms` 判停与 `300ms` 打断门槛，避免浏览器回声或 ASR 中间结果触发同一轮反复取消、重算。
+可通过 `PUBLIC_VOICE_VAD_*`、`PUBLIC_VOICE_INTERRUPT_SPEECH_MS`、
+`PUBLIC_VOICE_LLM_PREFILL` 和 `PUBLIC_VOICE_FILLER_ENABLED` 独立回滚或调优，不影响主仓私有会话。
+
 三者都要求 `X-Public-Voice-Secret`。浏览器不得直调。
 
 ## 故障与回滚

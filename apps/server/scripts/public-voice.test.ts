@@ -9,10 +9,49 @@ import {
 } from '../src/public-voice/policy.js';
 import { publicVoiceRoute } from '../src/routes/public-voice.js';
 import { customLlmRoute } from '../src/routes/custom-llm.js';
+import { resolvePublicVoiceTuning } from '../src/public-voice/tuning.js';
 
 async function main(): Promise<void> {
   process.env.PUBLIC_VOICE_SHARED_SECRET = 'test-public-secret';
   process.env.PUBLIC_VOICE_ENABLED = '1';
+
+  for (const key of [
+    'PUBLIC_VOICE_VAD_SILENCE_MS',
+    'PUBLIC_VOICE_VAD_AIVAD',
+    'PUBLIC_VOICE_INTERRUPT_SPEECH_MS',
+    'PUBLIC_VOICE_LLM_PREFILL',
+    'PUBLIC_VOICE_FILLER_ENABLED',
+  ]) {
+    delete process.env[key];
+  }
+  assert.deepEqual(resolvePublicVoiceTuning(), {
+    vadSilenceMs: 500,
+    vadAivad: false,
+    interruptSpeechMs: 300,
+    llmPrefill: false,
+    fillerEnabled: false,
+  });
+  process.env.PUBLIC_VOICE_VAD_SILENCE_MS = '650';
+  process.env.PUBLIC_VOICE_VAD_AIVAD = '1';
+  process.env.PUBLIC_VOICE_INTERRUPT_SPEECH_MS = '450';
+  process.env.PUBLIC_VOICE_LLM_PREFILL = '1';
+  process.env.PUBLIC_VOICE_FILLER_ENABLED = '1';
+  assert.deepEqual(resolvePublicVoiceTuning(), {
+    vadSilenceMs: 650,
+    vadAivad: true,
+    interruptSpeechMs: 450,
+    llmPrefill: true,
+    fillerEnabled: true,
+  });
+  for (const key of [
+    'PUBLIC_VOICE_VAD_SILENCE_MS',
+    'PUBLIC_VOICE_VAD_AIVAD',
+    'PUBLIC_VOICE_INTERRUPT_SPEECH_MS',
+    'PUBLIC_VOICE_LLM_PREFILL',
+    'PUBLIC_VOICE_FILLER_ENABLED',
+  ]) {
+    delete process.env[key];
+  }
 
   const missing = await publicVoiceRoute.request('/status');
   assert.equal(missing.status, 401, '缺少共享密钥必须拒绝');

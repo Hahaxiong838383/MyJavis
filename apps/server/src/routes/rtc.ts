@@ -20,6 +20,7 @@ import {
   deletePublicVoicePolicy,
   registerPublicVoicePolicy,
 } from '../public-voice/policy.js';
+import { resolvePublicVoiceTuning } from '../public-voice/tuning.js';
 
 const require = createRequire(import.meta.url);
 // 火山 RTC token 私有格式（二进制 HMAC），原样复用火山官方 token.cjs（不移植避免 bug）。
@@ -192,6 +193,13 @@ export async function startPublicVoiceSession(input: {
     expiresAt,
   });
 
+  const tuning = resolvePublicVoiceTuning();
+  console.log(
+    `[rtc] public tuning vad=${tuning.vadSilenceMs}ms aivad=${tuning.vadAivad ? 1 : 0}` +
+      ` interrupt=${tuning.interruptSpeechMs}ms prefill=${tuning.llmPrefill ? 1 : 0}` +
+      ` filler=${tuning.fillerEnabled ? 1 : 0}`,
+  );
+
   let result;
   try {
     result = await callRtcOpenAPI(
@@ -242,6 +250,11 @@ export async function stopPublicVoiceSession(roomId: string, reason: string): Pr
 
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
 function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOptions): Record<string, unknown> {
+  const publicTuning = opts.publicProof ? resolvePublicVoiceTuning() : undefined;
+  const vadSilenceMs = publicTuning?.vadSilenceMs ?? VAD_SILENCE_MS;
+  const vadAivad = publicTuning?.vadAivad ?? VAD_AIVAD;
+  const interruptSpeechMs = publicTuning?.interruptSpeechMs ?? INTERRUPT_SPEECH_MS;
+  const llmPrefill = publicTuning?.llmPrefill ?? LLM_PREFILL;
   const voicePrint =
     opts.voiceMode === 'denoise'
       ? { Mode: 1, IdList: opts.voiceprintIds.slice(0, 1), EnableSV: true }
@@ -270,11 +283,11 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
         },
         // 判停时长（官方 PDF 页6553/7473：默认 600ms，快问答可调短；文档承认 600 对快节奏"体感延迟"）。
         // 450 = 快接上；若句中思考停顿被切（抢话）→ 调回 500-550 或开 AIVAD。0 = 不发此字段（回滚）。
-        ...(VAD_SILENCE_MS > 0
-          ? { VADConfig: { SilenceTime: VAD_SILENCE_MS, ...(VAD_AIVAD ? { AIVAD: true } : {}) } }
+        ...(vadSilenceMs > 0
+          ? { VADConfig: { SilenceTime: vadSilenceMs, ...(vadAivad ? { AIVAD: true } : {}) } }
           : {}),
-        ...(INTERRUPT_SPEECH_MS > 0
-          ? { InterruptConfig: { InterruptSpeechDuration: INTERRUPT_SPEECH_MS } }
+        ...(interruptSpeechMs > 0
+          ? { InterruptConfig: { InterruptSpeechDuration: interruptSpeechMs } }
           : {}),
       },
       TTSConfig: {
@@ -300,7 +313,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
         ModelName: 'myjavis',
         APIKey: process.env.CUSTOM_LLM_API_KEY || 'none',
         SystemMessages: [],
-        ...(LLM_PREFILL ? { Prefill: true } : {}),
+        ...(llmPrefill ? { Prefill: true } : {}),
       },
       InterruptMode: 0, // 0=可打断（全双工 barge-in）
     },
