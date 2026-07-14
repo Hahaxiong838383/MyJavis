@@ -42,15 +42,27 @@ export async function startVisionProbe(): Promise<void> {
     return;
   }
   try {
-    // 确权前置（真机实证 2026-07-14）：TCC 对 spawn 的子进程静默拒绝且不弹窗（子进程无
-    // GUI 上下文）。WebView getUserMedia 的 TCC 主体=App 本身（KWS 麦克风同链路已验证），
-    // 首次以 MyJavis 名义弹系统摄像头授权；用户点允许 resolve 后才 spawn——同次通话即生效。
-    // 拿到立即关流：WebView 不占摄像头，真正采集在探针进程（授权后续次秒过不再弹）。
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    stream.getTracks().forEach((t) => t.stop());
+    // 确权（真机实证 2026-07-14 两轮迭代）：TCC 对 spawn 子进程静默拒绝，须由 WebView
+    // 以 App 名义确权。但 getUserMedia 会让页面进入 capture 态——WKWebView 对 capture 页
+    // 的音频输出有压制且疑似 stop 后不回退（"每次启动都轻"排障主嫌疑）。因此：
+    //  - 已授权（granted）：完全不碰 getUserMedia，零 capture 直接 spawn（常态路径）；
+    //  - 未授权（prompt）：才走一次 getUserMedia 弹授权，拿到立即关流；
+    //  - 拒绝（denied）：静默不拉探针。
+    const perm = await navigator.permissions.query({ name: 'camera' as PermissionName });
+    if (perm.state === 'denied') return;
+    if (perm.state !== 'granted') {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach((t) => t.stop());
+    }
   } catch (e) {
-    console.log('[vision] camera permission unavailable:', (e as Error)?.name ?? e);
-    return; // 拒绝/无摄像头：不拉探针，通话照常
+    // permissions API 不可用等异常：保守退回 getUserMedia 确权一次
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (e2) {
+      console.log('[vision] camera permission unavailable:', (e2 as Error)?.name ?? e2);
+      return;
+    }
   }
   try {
     const { invoke } = await import('@tauri-apps/api/core');
