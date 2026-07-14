@@ -138,11 +138,93 @@ class TestNodShake(unittest.TestCase):
         self.assertFalse(any(rc.push(t, v) for t, v in seq))
 
 
+class TestExpression(unittest.TestCase):
+    def test_smile_hold_then_change(self):
+        ed = probe.ExpressionDetector()
+        smile = {"mouthSmileLeft": 0.8, "mouthSmileRight": 0.75}
+        self.assertIsNone(ed.push(smile, 0), "首帧只立候选")
+        self.assertIsNone(ed.push(smile, 400), "800ms 前不切换")
+        change = ed.push(smile, 900)
+        self.assertEqual(change, ("neutral", "smiling"))
+        self.assertEqual(ed.current, "smiling")
+
+    def test_flicker_no_change(self):
+        ed = probe.ExpressionDetector()
+        smile = {"mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}
+        blank = {"mouthSmileLeft": 0.1, "mouthSmileRight": 0.1}
+        ed.push(smile, 0)
+        ed.push(blank, 300)  # 未满 hold 就消失
+        ed.push(smile, 600)
+        self.assertEqual(ed.current, "neutral", "闪烁不触发")
+
+    def test_neutral_fallback_and_cooldown(self):
+        ed = probe.ExpressionDetector()
+        smile = {"mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}
+        blank = {"mouthSmileLeft": 0.1, "mouthSmileRight": 0.1}
+        ed.push(smile, 0)
+        ed.push(smile, 900)
+        self.assertEqual(ed.current, "smiling")
+        # 3s 冷却内回落 neutral 被压制
+        ed.push(blank, 1000)
+        self.assertIsNone(ed.push(blank, 2000), "冷却内不发变化")
+        self.assertEqual(ed.current, "smiling")
+        # 冷却过后 neutral 稳定回落
+        change = ed.push(blank, 4200)
+        self.assertEqual(change, ("smiling", "neutral"))
+
+    def test_yawn_priority_by_score(self):
+        ed = probe.ExpressionDetector()
+        both = {"mouthSmileLeft": 0.55, "mouthSmileRight": 0.55, "jawOpen": 0.9}
+        ed.push(both, 0)
+        change = ed.push(both, 700)
+        self.assertEqual(change, ("neutral", "yawning"), "多桶命中取分高者")
+
+
+class FakeDet:
+    def __init__(self, label, conf, cx, w=40):
+        self.categories = [types.SimpleNamespace(category_name=label, score=conf)]
+        self.bounding_box = types.SimpleNamespace(origin_x=cx - w / 2, width=w, origin_y=0, height=40)
+
+
+class TestObjectTracker(unittest.TestCase):
+    def test_stable_after_min_hits(self):
+        ot = probe.ObjectTracker()
+        for i in range(3):
+            ot.push([FakeDet("cup", 0.7, 100)], i * 500, 640)
+        objs = ot.stable_list(1500)
+        self.assertEqual(len(objs), 1)
+        self.assertEqual(objs[0]["label"], "cup")
+        self.assertEqual(objs[0]["labelZh"], "杯子")
+        self.assertEqual(objs[0]["pos"], "left")
+
+    def test_flicker_not_reported(self):
+        ot = probe.ObjectTracker()
+        ot.push([FakeDet("dog", 0.6, 320)], 0, 640)
+        ot.push([FakeDet("dog", 0.6, 320)], 500, 640)
+        self.assertEqual(ot.stable_list(600), [], "命中 <3 次不报")
+
+    def test_gone_after_window(self):
+        ot = probe.ObjectTracker()
+        for i in range(4):
+            ot.push([FakeDet("book", 0.8, 500)], i * 400, 640)
+        self.assertEqual(len(ot.stable_list(2000)), 1)
+        self.assertEqual(ot.stable_list(2000 + 11_000), [], "窗外离场")
+
+    def test_top_n_by_conf(self):
+        ot = probe.ObjectTracker()
+        labels = [("cup", 0.9), ("book", 0.8), ("tv", 0.7), ("clock", 0.6), ("vase", 0.55), ("chair", 0.5)]
+        for i in range(3):
+            ot.push([FakeDet(l, c, 320) for l, c in labels], i * 500, 640)
+        objs = ot.stable_list(1500)
+        self.assertEqual(len(objs), 5, "top5 截断")
+        self.assertEqual(objs[0]["label"], "cup")
+
+
 class TestHeartbeat(unittest.TestCase):
     def test_payload_shape(self):
         st, _ = make_state()
         # 离席：presence=false + attention=unknown、无 face 节
-        p = st.heartbeat_payload()
+        p = st.heartbeat_payload(0)
         self.assertEqual(p, {"presence": False, "attention": "unknown"})
         # 在场看屏
         for _ in range(3):
@@ -151,11 +233,27 @@ class TestHeartbeat(unittest.TestCase):
         st.attrs = {"eyesOpen": True, "mouthOpen": False}
         st.update_attention(yaw=0, pitch=0, t_ms=0)
         st.update_attention(yaw=0, pitch=0, t_ms=600)
-        p = st.heartbeat_payload()
+        p = st.heartbeat_payload(700)
         self.assertTrue(p["presence"])
         self.assertEqual(p["attention"], "screen")
         self.assertEqual(p["face"]["headPose"]["yaw"], -2.0)
         self.assertIn("eyesOpen", p["face"]["attrs"])
+        self.assertNotIn("expression", p["face"], "neutral 不带 expression 节")
+        self.assertNotIn("objects", p, "无稳定物体不带 objects 节")
+
+    def test_payload_with_expression_and_objects(self):
+        st, _ = make_state()
+        for _ in range(3):
+            st.update_presence(True)
+        st.head_pose = {"pitch": 0, "yaw": 0, "roll": 0}
+        smile = {"mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}
+        st.update_expression(smile, 0)
+        st.update_expression(smile, 900)
+        for i in range(3):
+            st.objects.push([FakeDet("cup", 0.7, 320)], i * 400, 640)
+        p = st.heartbeat_payload(1300)
+        self.assertEqual(p["face"]["expression"]["label"], "smiling")
+        self.assertEqual(p["objects"][0]["labelZh"], "杯子")
 
     def test_leave_resets_pose(self):
         st, _ = make_state()
@@ -164,7 +262,7 @@ class TestHeartbeat(unittest.TestCase):
         st.head_pose = {"pitch": 0, "yaw": 0, "roll": 0}
         for _ in range(3):
             st.update_presence(False)
-        p = st.heartbeat_payload()
+        p = st.heartbeat_payload(0)
         self.assertFalse(p["presence"])
         self.assertNotIn("face", p, "离席后不带 face 节")
 

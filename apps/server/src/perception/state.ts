@@ -30,8 +30,18 @@ export interface PerceptionEnvelope {
 
 interface FaceNode {
   emotion?: { label: string; confidence?: number };
+  /** v0.3 级联：blendshape 高置信瞬时表情（与 emotion 七类正交，探针宁漏勿误门控后才上报）。 */
+  expression?: { label: 'smiling' | 'yawning' | 'eyes_closed'; confidence?: number };
   headPose?: { pitch: number; yaw: number; roll: number };
   attrs?: { eyesOpen?: boolean; mouthOpen?: boolean; glasses?: boolean };
+}
+
+/** v0.3 级联：本地物体检测的时间平滑稳定列表（帧/检测框不出采集进程，只有符号）。 */
+interface VisionObject {
+  label: string;
+  labelZh?: string;
+  pos?: 'left' | 'center' | 'right';
+  confidence: number;
 }
 
 interface RecentEvent {
@@ -46,6 +56,7 @@ interface TenantVisionState {
   presence: boolean;
   attention: 'screen' | 'away' | 'unknown';
   face?: FaceNode;
+  objects?: VisionObject[];
   lastHeartbeatAt: number;
   events: RecentEvent[];
 }
@@ -55,6 +66,7 @@ export interface VisionStateSnapshot {
   presence: boolean;
   attention: 'screen' | 'away' | 'unknown';
   face?: FaceNode;
+  objects?: VisionObject[];
   fresh: boolean;
   lastHeartbeatAgoMs: number;
   recentEvents: RecentEvent[];
@@ -105,10 +117,11 @@ export function ingestPerception(tenantId: string, msg: PerceptionEnvelope | Rec
   st.lastSeq = m.seq;
 
   if (m.type === 'heartbeat') {
-    const p = m.payload as { presence?: boolean; attention?: string; face?: FaceNode };
+    const p = m.payload as { presence?: boolean; attention?: string; face?: FaceNode; objects?: VisionObject[] };
     if (typeof p.presence === 'boolean') st.presence = p.presence;
     st.attention = p.attention === 'screen' || p.attention === 'away' ? p.attention : 'unknown';
     st.face = p.face;
+    st.objects = Array.isArray(p.objects) ? p.objects.slice(0, 8) : undefined;
     st.lastHeartbeatAt = now;
   } else if (m.type === 'event') {
     const p = m.payload as { kind?: string; direction?: string; to?: string };
@@ -130,6 +143,7 @@ export function getVisionState(tenantId: string, now = Date.now()): VisionStateS
     presence: st.presence,
     attention: st.attention,
     face: st.face,
+    objects: st.objects,
     fresh: agoMs <= HEARTBEAT_FRESH_MS,
     lastHeartbeatAgoMs: agoMs,
     recentEvents: st.events.filter((e) => now - e.at <= EVENT_WINDOW_MS),
@@ -178,6 +192,18 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
   } else {
     sight = '用户在摄像头画面中。';
   }
+  // v0.3 级联：表情（探针已高置信门控，措辞克制不过度解读）+ 稳定物体列表（本地符号，非画面细节）
+  const EXPR_TEXT: Record<string, string> = {
+    smiling: '用户脸上带着微笑。',
+    yawning: '用户刚打了个哈欠，可能有点困。',
+    eyes_closed: '用户闭着眼睛。',
+  };
+  const exprPart = (s.presence && s.face?.expression && EXPR_TEXT[s.face.expression.label]) || '';
+  const objs = (s.objects ?? [])
+    .slice(0, 5)
+    .map((o) => o.labelZh || o.label)
+    .join('、');
+  const objsPart = objs ? `画面里还能看到：${objs}。` : '';
   const recent = s.recentEvents
     .slice(-3)
     .map((e) => {
@@ -187,8 +213,8 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
     .join('、');
   const recentPart = recent ? `刚刚：${recent}。` : '';
   return (
-    `[视觉感知] 你接入了一路摄像头视觉，当前画面：${sight}${recentPart}` +
-    `需要时自然地运用这个感知回应（比如用户问"你能看到我吗"就如实描述），` +
-    `不要念字段名，也不要每轮都主动提你在看着。`
+    `[视觉感知] 你接入了一路摄像头视觉，当前画面：${sight}${exprPart}${objsPart}${recentPart}` +
+    `需要时自然地运用这个感知回应（比如用户问"你能看到我吗"就如实描述），只基于以上信息、` +
+    `不要脑补画面细节（衣着颜色/文字等你看不到的不要编），不要念字段名，也不要每轮都主动提你在看着。`
   );
 }

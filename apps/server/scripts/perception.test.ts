@@ -153,6 +153,51 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   console.log('✓ visionContextNote 文案');
 }
 
+// ---------- 5.5 级联 v0.3：expression + objects 透传与文案 ----------
+{
+  _resetPerceptionState();
+  const t0 = 550_000;
+  ingestPerception(
+    'tenA',
+    hb({}, {
+      presence: true,
+      attention: 'screen',
+      face: { headPose: { pitch: 0, yaw: 0, roll: 0 }, expression: { label: 'smiling', confidence: 0.9 } },
+      objects: [
+        { label: 'cup', labelZh: '杯子', pos: 'left', confidence: 0.8 },
+        { label: 'book', labelZh: '书', pos: 'center', confidence: 0.7 },
+      ],
+    }),
+    t0,
+  );
+  const s = getVisionState('tenA', t0 + 500);
+  assert.equal(s?.face?.expression?.label, 'smiling', 'expression 透传');
+  assert.equal(s?.objects?.length, 2, 'objects 透传');
+  let note = buildVisionContextNote('tenA', t0 + 500);
+  assert.ok(note?.includes('微笑'), `表情进文案，实际: ${note}`);
+  assert.ok(note?.includes('杯子') && note?.includes('书'), `物体进文案，实际: ${note}`);
+
+  // 打哈欠文案 + 物体列表变化
+  ingestPerception(
+    'tenA',
+    hb({ seq: 2 }, {
+      presence: true,
+      attention: 'screen',
+      face: { headPose: { pitch: 0, yaw: 0, roll: 0 }, expression: { label: 'yawning', confidence: 0.8 } },
+    }),
+    t0 + 1000,
+  );
+  note = buildVisionContextNote('tenA', t0 + 1500);
+  assert.ok(note?.includes('哈欠'), `哈欠文案，实际: ${note}`);
+  assert.ok(!note?.includes('杯子'), '新心跳无 objects 则不再提旧物体');
+
+  // v0.2 消息（无 expression/objects）向后兼容：行为与既有一致
+  ingestPerception('tenA', hb({ seq: 3 }, { presence: true, attention: 'screen' }), t0 + 2000);
+  note = buildVisionContextNote('tenA', t0 + 2500);
+  assert.ok(note?.includes('看着屏幕') && !note.includes('微笑'), 'v0.2 兼容');
+  console.log('✓ 级联 v0.3 expression/objects 融合');
+}
+
 // ---------- 6. 租户隔离 ----------
 {
   _resetPerceptionState();

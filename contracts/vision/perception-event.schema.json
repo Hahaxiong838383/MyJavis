@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "myjavis/contracts/vision/perception-event/0.2.0",
+  "$id": "myjavis/contracts/vision/perception-event/0.3.0",
   "title": "PerceptionEvent",
   "type": "object",
   "required": ["v", "type", "seq", "session_id", "ts_mono_ms", "ts_wall_ms", "payload"],
@@ -21,12 +21,34 @@
         "presence": { "type": "boolean" },
         "attention": { "enum": ["screen", "away", "unknown"] },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-        "face": { "$ref": "#/$defs/face" }
+        "face": { "$ref": "#/$defs/face" },
+        "objects": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["label", "confidence"],
+            "properties": {
+              "label": { "type": "string" },
+              "labelZh": { "type": "string" },
+              "pos": { "enum": ["left", "center", "right"] },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
       }
     },
     "face": {
       "type": "object",
       "properties": {
+        "expression": {
+          "type": "object",
+          "required": ["label"],
+          "properties": {
+            "label": { "enum": ["smiling", "yawning", "eyes_closed"] },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
         "emotion": {
           "type": "object",
           "required": ["label"],

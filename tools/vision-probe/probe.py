@@ -40,10 +40,12 @@ except ImportError as e:  # pragma: no cover
 
 CONTRACT_VERSION = "0.2.0"
 
-# FaceLandmarker 模型（mediapipe 0.10.30+ 移除 legacy solutions，用 Tasks API；输出 landmark
-# 拓扑与 FaceMesh 468 点兼容，本文件索引不变）。首跑自动下载缓存（~3.7MB，走系统代理）。
+# 模型（mediapipe 0.10.30+ Tasks API）。首跑自动下载缓存（走系统代理）。
+_MODEL_DIR = __file__.rsplit("/", 1)[0] + "/models"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-MODEL_PATH = __file__.rsplit("/", 1)[0] + "/models/face_landmarker.task"
+MODEL_PATH = _MODEL_DIR + "/face_landmarker.task"
+OBJ_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite"
+OBJ_MODEL_PATH = _MODEL_DIR + "/efficientdet_lite0.tflite"
 
 # ---- 关键点索引（复制自 gesture_drag_demo/face_tracker.py，MediaPipe FaceMesh 468 点拓扑） ----
 LEFT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
@@ -72,6 +74,45 @@ NOSE_PITCH_BASELINE = 0.47
 
 HEARTBEAT_INTERVAL_S = 1.0         # 契约 L0：1Hz ± 0.2s
 PROCESS_FPS = 15                   # 处理帧率（检测足够，省电）
+
+# ---- 级联切片1：blendshape 表情三桶（契约 v0.3 face.expression；宁漏勿误：高阈值+持续门控） ----
+# 阈值定标依据：官方微笑人像实测 mouthSmile≈0.95（阈 0.5 裕度充分）、闭嘴 jawOpen≈0.12、
+# 睁眼 blink≈0.26；哈欠为大张嘴 jawOpen 取 0.6；闭眼≠眨眼故持续取 1.5s。
+EXPR_RULES = {
+    "smiling": {"keys": ("mouthSmileLeft", "mouthSmileRight"), "th": 0.5, "hold_ms": 800},
+    "yawning": {"keys": ("jawOpen",), "th": 0.6, "hold_ms": 600},
+    "eyes_closed": {"keys": ("eyeBlinkLeft", "eyeBlinkRight"), "th": 0.6, "hold_ms": 1500},
+}
+EXPR_NEUTRAL_HOLD_MS = 800          # 条件消失持续这么久才回 neutral
+EXPR_CHANGE_COOLDOWN_MS = 3000      # 契约 §2：同向变化 3s 冷却
+
+# ---- 级联切片2：物体检测（契约 v0.3 heartbeat.objects；滑窗投票平滑防逐帧闪烁） ----
+OBJ_DETECT_EVERY_N = 8              # 15fps 处理循环里每 8 帧跑一次 ≈ 2fps
+OBJ_SCORE_THRESHOLD = 0.45
+OBJ_WINDOW_MS = 10_000              # 滑窗：窗内命中 ≥3 次判在场，0 次判离场
+OBJ_MIN_HITS = 3
+OBJ_TOP_N = 5                       # 心跳最多报 5 个（契约上限 8）
+
+# COCO 80 类中文映射（EfficientDet-Lite0 标签集；person 已在 detector denylist 过滤）
+COCO_ZH = {
+    "person": "人", "bicycle": "自行车", "car": "汽车", "motorcycle": "摩托车", "airplane": "飞机",
+    "bus": "公交车", "train": "火车", "truck": "卡车", "boat": "船", "traffic light": "红绿灯",
+    "fire hydrant": "消防栓", "stop sign": "停车牌", "parking meter": "停车计时器", "bench": "长椅",
+    "bird": "鸟", "cat": "猫", "dog": "狗", "horse": "马", "sheep": "羊", "cow": "牛",
+    "elephant": "大象", "bear": "熊", "zebra": "斑马", "giraffe": "长颈鹿", "backpack": "背包",
+    "umbrella": "雨伞", "handbag": "手提包", "tie": "领带", "suitcase": "行李箱", "frisbee": "飞盘",
+    "skis": "滑雪板", "snowboard": "单板滑雪板", "sports ball": "球", "kite": "风筝",
+    "baseball bat": "棒球棒", "baseball glove": "棒球手套", "skateboard": "滑板", "surfboard": "冲浪板",
+    "tennis racket": "网球拍", "bottle": "瓶子", "wine glass": "酒杯", "cup": "杯子", "fork": "叉子",
+    "knife": "刀", "spoon": "勺子", "bowl": "碗", "banana": "香蕉", "apple": "苹果",
+    "sandwich": "三明治", "orange": "橙子", "broccoli": "西兰花", "carrot": "胡萝卜",
+    "hot dog": "热狗", "pizza": "披萨", "donut": "甜甜圈", "cake": "蛋糕", "chair": "椅子",
+    "couch": "沙发", "potted plant": "盆栽", "bed": "床", "dining table": "桌子", "toilet": "马桶",
+    "tv": "电视", "laptop": "笔记本电脑", "mouse": "鼠标", "remote": "遥控器", "keyboard": "键盘",
+    "cell phone": "手机", "microwave": "微波炉", "oven": "烤箱", "toaster": "烤面包机",
+    "sink": "水槽", "refrigerator": "冰箱", "book": "书", "clock": "钟", "vase": "花瓶",
+    "scissors": "剪刀", "teddy bear": "玩偶", "hair drier": "吹风机", "toothbrush": "牙刷",
+}
 
 
 def now_mono_ms() -> float:
@@ -152,6 +193,84 @@ class ReversalCounter:
         return False
 
 
+class ExpressionDetector:
+    """blendshape → 三桶表情状态机（阈值+持续门控+neutral 回落+变化冷却，宁漏勿误）。"""
+
+    def __init__(self) -> None:
+        self.current = "neutral"
+        self._cand: str | None = None
+        self._cand_since = 0.0
+        self._last_change_ms = -1e12
+
+    @staticmethod
+    def _bucket_of(scores: dict) -> tuple[str, float]:
+        """当帧命中的桶（多桶同时命中取分最高；都不中= neutral）。"""
+        best, best_score = "neutral", 0.0
+        for label, rule in EXPR_RULES.items():
+            vals = [scores.get(k, 0.0) for k in rule["keys"]]
+            avg = sum(vals) / len(vals)
+            if avg >= rule["th"] and avg > best_score:
+                best, best_score = label, avg
+        return best, best_score
+
+    def push(self, scores: dict, t_ms: float) -> tuple[str, str] | None:
+        """喂一帧 blendshape 分数表；发生稳定切换时返回 (from, to)，否则 None。"""
+        target, score = self._bucket_of(scores)
+        if target != self._cand:
+            self._cand = target
+            self._cand_since = t_ms
+            self._cand_score = score
+            return None
+        hold = EXPR_NEUTRAL_HOLD_MS if target == "neutral" else EXPR_RULES[target]["hold_ms"]
+        if target != self.current and t_ms - self._cand_since >= hold:
+            if t_ms - self._last_change_ms < EXPR_CHANGE_COOLDOWN_MS:
+                return None
+            prev, self.current = self.current, target
+            self._last_change_ms = t_ms
+            self.confidence = round(score, 2)
+            return (prev, target)
+        return None
+
+
+class ObjectTracker:
+    """物体滑窗投票平滑：窗内命中≥N 判在场（防逐帧闪烁），0 命中判离场。"""
+
+    def __init__(self) -> None:
+        self._hits: dict[str, deque] = {}  # label -> deque[(t_ms, conf, pos)]
+
+    def push(self, detections: list, t_ms: float, frame_w: float) -> None:
+        for d in detections:
+            c = d.categories[0]
+            cx = d.bounding_box.origin_x + d.bounding_box.width / 2
+            pos = "left" if cx < frame_w / 3 else ("right" if cx > frame_w * 2 / 3 else "center")
+            self._hits.setdefault(c.category_name, deque()).append((t_ms, c.score, pos))
+        self._expire(t_ms)
+
+    def _expire(self, t_ms: float) -> None:
+        for label in list(self._hits):
+            q = self._hits[label]
+            while q and t_ms - q[0][0] > OBJ_WINDOW_MS:
+                q.popleft()
+            if not q:
+                del self._hits[label]
+
+    def stable_list(self, t_ms: float) -> list[dict]:
+        self._expire(t_ms)
+        out = []
+        for label, q in self._hits.items():
+            if len(q) < OBJ_MIN_HITS:
+                continue
+            _, conf, pos = q[-1]
+            out.append({
+                "label": label,
+                "labelZh": COCO_ZH.get(label, label),
+                "pos": pos,
+                "confidence": round(conf, 2),
+            })
+        out.sort(key=lambda o: -o["confidence"])
+        return out[:OBJ_TOP_N]
+
+
 class ProbeState:
     """presence/attention/tilt 状态机（帧确认 + 持续时间 + 滞回，gesture demo 防抖范式）。"""
 
@@ -169,6 +288,8 @@ class ProbeState:
         self.shake = ReversalCounter()
         self.head_pose: dict | None = None
         self.attrs: dict | None = None
+        self.expr = ExpressionDetector()          # 切片1：表情三桶
+        self.objects = ObjectTracker()            # 切片2：物体平滑
 
     # -- presence：连续 3 帧一致才翻转（契约） --
     def update_presence(self, detected: bool) -> None:
@@ -240,13 +361,28 @@ class ProbeState:
             self.sender.send("event", {"kind": "head_shake", "confidence": 0.8})
             print("[probe] event: head_shake")
 
-    def heartbeat_payload(self) -> dict:
+    def update_expression(self, blend_scores: dict, t_ms: float) -> None:
+        change = self.expr.push(blend_scores, t_ms)
+        if change:
+            frm, to = change
+            self.sender.send(
+                "event",
+                {"kind": "expression_change", "from": frm, "to": to, "confidence": getattr(self.expr, "confidence", 0.7)},
+            )
+            print(f"[probe] event: expression_change {frm}→{to}")
+
+    def heartbeat_payload(self, now_ms: float | None = None) -> dict:
         payload: dict = {"presence": self.presence, "attention": self.attention if self.presence else "unknown"}
         if self.presence and self.head_pose:
             face: dict = {"headPose": self.head_pose}
             if self.attrs:
                 face["attrs"] = self.attrs
+            if self.expr.current != "neutral":
+                face["expression"] = {"label": self.expr.current, "confidence": getattr(self.expr, "confidence", 0.7)}
             payload["face"] = face
+        objs = self.objects.stable_list(now_ms if now_ms is not None else now_mono_ms())
+        if objs:
+            payload["objects"] = objs
         return payload
 
 
@@ -281,18 +417,18 @@ def extract_features(lm, w: float, h: float) -> tuple[dict, dict]:
     return head_pose, attrs
 
 
-def ensure_model() -> str:
+def ensure_model(url: str = MODEL_URL, path: str = MODEL_PATH, name: str = "FaceLandmarker") -> str:
     import os
 
-    if os.path.exists(MODEL_PATH):
-        return MODEL_PATH
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    print(f"[probe] 首跑下载 FaceLandmarker 模型（~3.7MB）→ {MODEL_PATH}")
-    tmp = MODEL_PATH + ".part"
-    with request.urlopen(MODEL_URL, timeout=60) as resp, open(tmp, "wb") as f:
+    if os.path.exists(path):
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    print(f"[probe] 首跑下载 {name} 模型 → {path}")
+    tmp = path + ".part"
+    with request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as f:
         f.write(resp.read())
-    os.rename(tmp, MODEL_PATH)
-    return MODEL_PATH
+    os.rename(tmp, path)
+    return path
 
 
 def main() -> None:
@@ -305,6 +441,7 @@ def main() -> None:
 
     print(f"[probe] boot {time.strftime('%F %T')} → {args.server} camera={args.camera}")
     model_path = ensure_model()
+    obj_model_path = ensure_model(OBJ_MODEL_URL, OBJ_MODEL_PATH, "ObjectDetector(EfficientDet-Lite0)")
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print("[probe] 摄像头打不开（检查系统设置→隐私→摄像头授权，或换 --camera 索引）", file=sys.stderr)
@@ -321,10 +458,21 @@ def main() -> None:
             num_faces=1,
             min_face_detection_confidence=0.5,
             min_tracking_confidence=0.5,
+            output_face_blendshapes=True,  # 切片1：52 blendshapes（表情三桶原料）
+        )
+    )
+    obj_detector = mp_vision.ObjectDetector.create_from_options(
+        mp_vision.ObjectDetectorOptions(
+            base_options=mp_tasks.BaseOptions(model_asset_path=obj_model_path),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            max_results=8,
+            score_threshold=OBJ_SCORE_THRESHOLD,
+            category_denylist=["person"],  # 人走 face 通道，物体列表不报
         )
     )
     state = ProbeState(sender)
     last_hb, frame_interval = 0.0, 1.0 / PROCESS_FPS
+    frame_no = 0
     try:
         while True:
             t_frame = time.monotonic()
@@ -335,7 +483,9 @@ def main() -> None:
             frame = cv2.resize(frame, (640, 360))  # 降采样：检测够用，省算力
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             t_ms = now_mono_ms()
-            result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), int(t_ms))
+            frame_no += 1
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = landmarker.detect_for_video(mp_img, int(t_ms))
             detected = bool(result.face_landmarks)
             state.update_presence(detected)
             if detected and state.presence:
@@ -345,13 +495,24 @@ def main() -> None:
                 state.update_attention(head_pose["yaw"], head_pose["pitch"], t_ms)
                 state.update_tilt(head_pose["roll"], t_ms)
                 state.update_nod_shake(head_pose["yaw"], head_pose["pitch"], t_ms)
+                if result.face_blendshapes:
+                    scores = {c.category_name: c.score for c in result.face_blendshapes[0]}
+                    state.update_expression(scores, t_ms)
+
+            # 切片2：物体检测 ~2fps（每 8 帧），滑窗投票平滑
+            if frame_no % OBJ_DETECT_EVERY_N == 0:
+                obj_result = obj_detector.detect_for_video(mp_img, int(t_ms))
+                state.objects.push(obj_result.detections, t_ms, 640)
 
             if time.monotonic() - last_hb >= HEARTBEAT_INTERVAL_S:
                 last_hb = time.monotonic()
-                state.sender.send("heartbeat", state.heartbeat_payload())
+                payload = state.heartbeat_payload(t_ms)
+                state.sender.send("heartbeat", payload)
                 hp = state.head_pose or {}
+                objs = ",".join(o["labelZh"] for o in payload.get("objects", [])) or "-"
                 print(
                     f"[hb] presence={state.presence} attention={state.attention} "
+                    f"expr={state.expr.current} objs=[{objs}] "
                     f"yaw={hp.get('yaw', '-')} pitch={hp.get('pitch', '-')} roll={hp.get('roll', '-')}"
                 )
 
