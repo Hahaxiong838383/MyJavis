@@ -211,6 +211,11 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   assert.ok(note?.includes('低落'), `sad 文案，实际: ${note}`);
   assert.ok(note?.includes('没看清'), '防编物体指令在位');
 
+  // expression_change 事件文案带具体表情（30s 短记忆桥：表情瞬时回落后提问仍可命中）
+  ingestPerception('tenA', ev('expression_change', { session_id: 'sess-neg-0001', seq: 3 }, { from: 'neutral', to: 'frowning' }), t0 + 2000);
+  note = buildVisionContextNote('tenA', t0 + 2400);
+  assert.ok(note?.includes('皱了皱眉'), `事件文案带具体表情，实际: ${note}`);
+
   // v0.2 消息（无 expression/objects）向后兼容：行为与既有一致
   ingestPerception('tenA', hb({ seq: 3 }, { presence: true, attention: 'screen' }), t0 + 2000);
   note = buildVisionContextNote('tenA', t0 + 2500);

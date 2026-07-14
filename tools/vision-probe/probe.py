@@ -44,8 +44,10 @@ CONTRACT_VERSION = "0.2.0"
 _MODEL_DIR = __file__.rsplit("/", 1)[0] + "/models"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 MODEL_PATH = _MODEL_DIR + "/face_landmarker.task"
-OBJ_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite"
-OBJ_MODEL_PATH = _MODEL_DIR + "/efficientdet_lite0.tflite"
+# lite0→lite2（2026-07-14 真机实锤：lite0 手持小物弱区——鼠标零检出/瓶子误检手机遥控器；
+# lite2 12MB/55ms，2fps 场景占用 11% 无压力，官方图对比置信度显著更高）
+OBJ_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/1/efficientdet_lite2.tflite"
+OBJ_MODEL_PATH = _MODEL_DIR + "/efficientdet_lite2.tflite"
 
 # ---- 关键点索引（复制自 gesture_drag_demo/face_tracker.py，MediaPipe FaceMesh 468 点拓扑） ----
 LEFT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
@@ -84,8 +86,10 @@ EXPR_RULES = {
     "eyes_closed": {"keys": ("eyeBlinkLeft", "eyeBlinkRight"), "th": 0.6, "hold_ms": 1500},
     # 负面两桶（2026-07-14 川哥拍板 demo 全面测试）：初值按 blendshape 典型幅度保守给，
     # 真机日志（[hb] 行 bs[...] 调试分量）校准迭代。frowning=皱眉(生气样)、sad=撇嘴+眉心上提(低落样)。
-    "frowning": {"keys": ("browDownLeft", "browDownRight"), "th": 0.5, "hold_ms": 800},
-    "sad": {"keys": ("mouthFrownLeft", "mouthFrownRight"), "th": 0.35, "hold_ms": 1000},
+    # 阈值据川哥真脸日志校准(2026-07-14)：皱眉 bd 实测 0.23-0.39、撇嘴 mf 实测 0.30-0.59。
+    # veto：大笑会挤眉(实测 bd=0.39 且 sm=0.86 同帧)——微笑分量高时不判负面。
+    "frowning": {"keys": ("browDownLeft", "browDownRight"), "th": 0.28, "hold_ms": 800, "veto": ("mouthSmileLeft", "mouthSmileRight"), "veto_th": 0.4},
+    "sad": {"keys": ("mouthFrownLeft", "mouthFrownRight"), "th": 0.28, "hold_ms": 1000, "veto": ("mouthSmileLeft", "mouthSmileRight"), "veto_th": 0.4},
 }
 EXPR_NEUTRAL_HOLD_MS = 800          # 条件消失持续这么久才回 neutral
 EXPR_CHANGE_COOLDOWN_MS = 3000      # 契约 §2：同向变化 3s 冷却
@@ -213,7 +217,14 @@ class ExpressionDetector:
         for label, rule in EXPR_RULES.items():
             vals = [scores.get(k, 0.0) for k in rule["keys"]]
             avg = sum(vals) / len(vals)
-            if avg >= rule["th"] and avg > best_score:
+            if avg < rule["th"]:
+                continue
+            veto = rule.get("veto")
+            if veto:  # 互斥保护：冲突分量高则本桶弃权（如大笑挤眉不算皱眉）
+                v_avg = sum(scores.get(k, 0.0) for k in veto) / len(veto)
+                if v_avg >= rule.get("veto_th", 0.4):
+                    continue
+            if avg > best_score:
                 best, best_score = label, avg
         return best, best_score
 

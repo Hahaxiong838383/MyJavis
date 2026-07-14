@@ -173,6 +173,17 @@ const EVENT_LABELS: Record<string, string> = {
   gesture: '做了个手势',
 };
 
+/** expression_change 事件的 detail(=to 表情) 中文化：让"5秒前皱了皱眉"进 30s 事件窗——
+ *  表情是瞬时的、提问是延迟的（真机实证：皱眉 2s 回落，开口问时状态已消失），事件短记忆补位。 */
+const EXPR_EVENT_TEXT: Record<string, string> = {
+  smiling: '露出了笑容',
+  frowning: '皱了皱眉',
+  sad: '看起来情绪低落了一下',
+  yawning: '打了个哈欠',
+  eyes_closed: '闭上了眼睛',
+  neutral: '表情恢复平静',
+};
+
 /**
  * 生成注入 LLM 的视觉上下文（无状态/离线/开关关 → undefined = 完全不注入，现有行为零影响）。
  * 文案只用稳定语义（presence/attention/近期事件）；face 细节（角度/attrs）噪声大不进 prompt，
@@ -211,7 +222,11 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
     .slice(-3)
     .map((e) => {
       const ago = Math.max(1, Math.round((now - e.at) / 1000));
-      return `${ago}秒前${EVENT_LABELS[e.kind] ?? e.kind}`;
+      const label =
+        e.kind === 'expression_change' && e.detail
+          ? (EXPR_EVENT_TEXT[e.detail] ?? EVENT_LABELS[e.kind])
+          : (EVENT_LABELS[e.kind] ?? e.kind);
+      return `${ago}秒前${label}`;
     })
     .join('、');
   const recentPart = recent ? `刚刚：${recent}。` : '';
