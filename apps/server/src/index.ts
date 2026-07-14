@@ -24,6 +24,7 @@ import { musicRoute } from './routes/music.js';
 import { remindersRoute } from './routes/reminders.js';
 import { syncRoute } from './routes/sync.js';
 import { privacyRoute } from './routes/privacy.js';
+import { perceptionRoute } from './routes/perception.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
 import { MemoryRefiner } from './memory/refine.js';
 import { storage as memoryStorage } from './memory/index.js';
@@ -75,6 +76,7 @@ app.route('/api/music', musicRoute);
 app.route('/api/reminders', remindersRoute);
 app.route('/api/sync', syncRoute);
 app.route('/api/privacy', privacyRoute); // R2 隐私记忆通道（pending/ack/session-context）
+app.route('/api/perception', perceptionRoute); // Vision V0 感知 ingest（VISION_ENABLED 默认关）
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 

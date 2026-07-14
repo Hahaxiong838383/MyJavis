@@ -79,6 +79,7 @@ import {
   type CandidateTrack,
 } from '../music/music-session.js';
 import { buildStreamUrl } from '../music/stream-url.js';
+import { buildVisionContextNote } from '../perception/state.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints, soloOwnerId } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
@@ -336,6 +337,8 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const musicSession = musicRoomId ? getMusicSession(musicRoomId) : undefined;
   const musicTools = musicSession ? [MUSIC_CONTROL_TOOL] : undefined;
   const musicContextNote = musicSession ? buildMusicContextNote(musicSession) : undefined;
+  // Vision V0（VISION_ENABLED 默认关）：采集端在线且心跳 fresh 才有值，其余 undefined=零影响。
+  const visionContextNote = tenant ? buildVisionContextNote(tenant.id) : undefined;
 
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
@@ -385,7 +388,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
         systemPrompt,
         userText,
         history,
-        contextNote: [contextNoteText, musicContextNote].filter(Boolean).join('\n\n') || undefined,
+        contextNote: [contextNoteText, musicContextNote, visionContextNote].filter(Boolean).join('\n\n') || undefined,
         tools: musicTools,
         onDelta: (delta) => {
           if (!firstTokenSeen) {

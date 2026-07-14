@@ -1,0 +1,5 @@
+# vision-probe 依赖（gesture_drag_demo 同源；mediapipe 放宽上限——本机 python3.13 起
+# 仅提供 0.10.30+，legacy solutions.face_mesh API 0.10.x 全系保留）
+opencv-python>=4.8
+mediapipe>=0.10.9
+numpy>=1.24

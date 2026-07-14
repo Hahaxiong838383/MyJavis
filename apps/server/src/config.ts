@@ -69,4 +69,10 @@ export const config = {
      *  kill switch——DeepSeek 大面积故障期可设 0 秒回正则版。见 docs/IMPL-音乐意图AI化-PROMPT.md。 */
     fcEnabled: opt('MUSIC_FC_ENABLED', '1') === '1',
   },
+
+  vision: {
+    /** Vision 感知 V0（2026-07-14，默认关）：开=接受 /api/perception/ingest 上报并向
+     *  LLM 注入 visionContextNote。关=端点 503 且零注入。见 docs/VISION-评估与V0方案.md。 */
+    enabled: opt('VISION_ENABLED', '0') === '1',
+  },
 } as const;
