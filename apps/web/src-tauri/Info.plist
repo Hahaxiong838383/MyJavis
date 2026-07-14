@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>用于实时语音对话</string>
+  <key>NSCameraUsageDescription</key>
+  <string>用于视觉感知（画面仅在本机处理，不会上传）</string>
 </dict>
 </plist>

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useAppStore } from './store';
 import { apiFetch } from './api';
+import { startVisionProbe, stopVisionProbe } from './vision-bridge';
 
 /**
  * 火山 RTC 实时对话 Hook（抽取自 P003 useVolcRtc.ts，剥离登录/吐槽/kidshub）。
@@ -182,6 +183,9 @@ export function useVoiceRtc(): UseVoiceRtc {
         setConnectPhase('idle');
         setVoiceStatus('listening');
 
+        // Vision 探针随通话拉起（0.16.0）：失败/未安装静默，不影响通话
+        void startVisionProbe();
+
         // 采麦 + 发布（异步，权限慢/失败不阻塞连接与开口）
         engine
           .startAudioCapture()
@@ -202,6 +206,7 @@ export function useVoiceRtc(): UseVoiceRtc {
           vertcRef.current?.destroyEngine?.(engine);
           engineRef.current = null;
         }
+        void stopVisionProbe(); // 连接失败兜底：探针若已拉起随之关停
         setConnected(false);
         setVoiceStatus('idle');
         setConnecting(false);
@@ -228,6 +233,7 @@ export function useVoiceRtc(): UseVoiceRtc {
   }, []);
 
   const stop = useCallback(async () => {
+    void stopVisionProbe(); // 挂断即停探针（摄像头生命周期=通话生命周期）
     const engine = engineRef.current;
     if (engine) {
       try {

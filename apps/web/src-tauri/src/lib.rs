@@ -1,4 +1,5 @@
 mod kws;
+mod vision;
 
 use tauri::Manager;
 
@@ -75,7 +76,16 @@ pub fn run() {
             None,
         ))
         .manage(kws::KwsManager::default())
-        .invoke_handler(tauri::generate_handler![kws::kws_start, kws::kws_stop, kws::kws_feed, vault_harden])
+        .manage(vision::VisionManager::default())
+        .invoke_handler(tauri::generate_handler![
+            kws::kws_start,
+            kws::kws_stop,
+            kws::kws_feed,
+            vault_harden,
+            vision::vision_start,
+            vision::vision_stop,
+            vision::vision_status
+        ])
         .setup(|app| {
             setup_tray(app)?;
             Ok(())
@@ -93,6 +103,10 @@ pub fn run() {
             // macOS 点 Dock 图标重开：恢复窗口
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_main_window(app);
+            }
+            // 退出兜底：kill vision 探针防僵尸摄像头进程
+            if let tauri::RunEvent::Exit = event {
+                vision::kill_on_exit(app);
             }
         });
 }

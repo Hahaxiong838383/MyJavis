@@ -303,6 +303,7 @@ def main() -> None:
     ap.add_argument("--show", action="store_true", help="调试窗口（仅本机显示，画面不外传）")
     args = ap.parse_args()
 
+    print(f"[probe] boot {time.strftime('%F %T')} → {args.server} camera={args.camera}")
     model_path = ensure_model()
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():

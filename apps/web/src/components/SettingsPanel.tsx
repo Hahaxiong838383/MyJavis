@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, clearInviteToken, getInviteToken } from '../api';
+import { setVisionEnabled, stopVisionProbe, visionEnabled, visionProbeRunning } from '../vision-bridge';
 
 /**
  * 账号设置面板（批次B）：人设 prompt（叠加在锁定基座上）+ Javis 对我的称呼 + 退出激活。
@@ -10,6 +11,8 @@ const isTauri = (): boolean => typeof window !== 'undefined' && '__TAURI_INTERNA
 export function SettingsPanel() {
   const [name, setName] = useState('');
   const [autostart, setAutostart] = useState<boolean | null>(null); // null=不可用(浏览器)
+  const [visionOn, setVisionOn] = useState(visionEnabled());
+  const [visionRunning, setVisionRunning] = useState(false);
   const [userTitle, setUserTitle] = useState('');
   const [personaExtra, setPersonaExtra] = useState('');
   const [soloMode, setSoloMode] = useState(true);
@@ -21,7 +24,17 @@ export function SettingsPanel() {
     void import('@tauri-apps/plugin-autostart')
       .then(async (m) => setAutostart(await m.isEnabled()))
       .catch(() => setAutostart(null));
+    void visionProbeRunning().then(setVisionRunning);
   }, []);
+
+  const toggleVision = (on: boolean) => {
+    setVisionOn(on);
+    setVisionEnabled(on);
+    if (!on) {
+      // 关闭立即止血（通话中也马上停摄像头）；开启则下次通话生效
+      void stopVisionProbe().then(() => setVisionRunning(false));
+    }
+  };
 
   const toggleAutostart = async () => {
     if (autostart === null) return;
@@ -124,6 +137,19 @@ export function SettingsPanel() {
           <input type="checkbox" checked={autostart} onChange={() => void toggleAutostart()} />
           登录时自动启动（App 常驻菜单栏，提醒与本机隐私记忆不断线）
         </label>
+      )}
+
+      {isTauri() && (
+        <>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: '#cbd5e1', cursor: 'pointer' }}>
+            <input type="checkbox" checked={visionOn} onChange={(e) => toggleVision(e.target.checked)} />
+            视觉感知（实验）：通话时 Javis 通过摄像头感知你在不在、有没有看屏幕
+            {visionRunning ? '（运行中 🟢）' : ''}
+          </label>
+          <span style={styles.hint}>
+            画面仅在本机处理、绝不上传；摄像头只在通话中开启，挂断即关。首次会请求摄像头权限；开启后下次通话生效。
+          </span>
+        </>
       )}
       <div style={styles.footerRow}>
         <span style={styles.message}>{message}</span>
