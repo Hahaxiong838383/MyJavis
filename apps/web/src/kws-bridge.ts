@@ -47,11 +47,23 @@ interface FeedPipeline {
 }
 
 let feedPipeline: FeedPipeline | null = null;
+// start/stop 竞态守卫（2026-07-14 真机排障）：startFedMode 在 getUserMedia 挂起期间若被
+// kwsStop 追上（guarded 态快速进出——暂停/换歌/报幕抖动），旧实现会在 stop 之后才把
+// pipeline 建起来且无人清理——泄漏一条 echoCancellation 麦克风流，macOS 语音处理链
+// 常开会压低 App 播放响度并二次处理 mic 信号（"重开对话音量变低/偶发没反应"高嫌疑根因）。
+// 每次 start 递增 generation，stop 也递增；异步各阶段完成后 generation 不匹配 = 已被叫停，
+// 立刻拆掉刚建的资源。
+let kwsGeneration = 0;
 
-async function startFedMode(): Promise<void> {
+async function startFedMode(gen: number): Promise<void> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
+  if (gen !== kwsGeneration) {
+    stream.getTracks().forEach((t) => t.stop());
+    console.log('[kws] start superseded during getUserMedia, stream released');
+    return;
+  }
   try {
     // 16kHz 上下文：WebKit 自动把 mic 流重采样到 context rate，Rust 侧免二次重采
     const ctx = new AudioContext({ sampleRate: 16000 });
@@ -62,7 +74,13 @@ async function startFedMode(): Promise<void> {
       URL.revokeObjectURL(workletUrl);
     }
     const { invoke } = await import('@tauri-apps/api/core');
+    if (gen !== kwsGeneration) throw new Error('superseded'); // worklet/import 等待期间被叫停
     await invoke('kws_start', { mode: 'fed', sampleRate: Math.round(ctx.sampleRate) });
+    if (gen !== kwsGeneration) {
+      // Rust 侧刚被幽灵启动——立即对称关停，避免 stop 后 KWS 复活
+      void invoke('kws_stop').catch(() => {});
+      throw new Error('superseded');
+    }
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'kws-tap');
     node.port.onmessage = (e: MessageEvent) => {
@@ -95,12 +113,15 @@ async function stopFedMode(): Promise<void> {
 
 export async function kwsStart(): Promise<void> {
   if (!isTauri()) return;
+  const gen = ++kwsGeneration;
   try {
-    await startFedMode();
+    await startFedMode(gen);
     return;
   } catch (e) {
+    if ((e as Error)?.message === 'superseded') return; // 被 stop 追上：静默，不降级 cpal
     console.log('[kws] webview mic failed, fallback to cpal:', (e as Error)?.message ?? e);
   }
+  if (gen !== kwsGeneration) return; // 失败降级前再验一次
   // 降级：Rust cpal 直采（无 AEC）
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -113,6 +134,7 @@ export async function kwsStart(): Promise<void> {
 
 export async function kwsStop(): Promise<void> {
   if (!isTauri()) return;
+  kwsGeneration++; // 叫停在途的 startFedMode（见竞态守卫注释）
   await stopFedMode();
   try {
     const { invoke } = await import('@tauri-apps/api/core');
