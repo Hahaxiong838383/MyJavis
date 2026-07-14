@@ -136,6 +136,17 @@ export function getVisionState(tenantId: string, now = Date.now()): VisionStateS
   };
 }
 
+/**
+ * ①reminder 触达联动（2026-07-14）：用户明确不在屏幕前才返回 true——到点提醒跳过
+ * RTC 白念，走 fired/App 通知路径。保守语义：无状态/探针离线/在场 一律 false
+ * （宁可白念不可漏念，视觉只做纯增益不做扣分项）。
+ */
+export function isUserAwayFromScreen(tenantId: string, now = Date.now()): boolean {
+  if (!config.vision.enabled) return false;
+  const s = getVisionState(tenantId, now);
+  return Boolean(s && s.fresh && !s.presence);
+}
+
 const EVENT_LABELS: Record<string, string> = {
   person_enter: '回到画面中',
   person_leave: '离开了画面',

@@ -8,6 +8,7 @@
  */
 import { speakText } from '../providers/rtc-control.js';
 import { listAgentRooms } from '../routes/rtc.js';
+import { isUserAwayFromScreen } from '../perception/state.js';
 import { fireLine } from './intent.js';
 import { reminderStore } from './store.js';
 
@@ -35,6 +36,13 @@ export async function tickOnce(now = Date.now()): Promise<void> {
   const store = reminderStore();
   const due = store.duePending(now);
   for (const r of due) {
+    // ①视觉联动（2026-07-14）：明确不在屏幕前 → 跳过 RTC 白念，直接 fired 走
+    // App 通知路径（回来可见；30min 无人接自然 missed 补报）。无视觉/离线=行为不变。
+    if (isUserAwayFromScreen(r.tenantId, now)) {
+      store.markFired(r.id);
+      console.log(`[reminder] user away (vision), skip rtc → fired id=${r.id} "${r.content.slice(0, 20)}"`);
+      continue;
+    }
     const rooms = listAgentRooms(r.tenantId);
     let delivered = false;
     for (const roomId of rooms) {

@@ -14,8 +14,10 @@ const {
   ingestPerception,
   getVisionState,
   buildVisionContextNote,
+  isUserAwayFromScreen,
   _resetPerceptionState,
 } = await import('../src/perception/state.js');
+const { maybeGreetOnReturn, _resetGreeterState } = await import('../src/perception/greeter.js');
 const { perceptionRoute } = await import('../src/routes/perception.js');
 const { createTenant } = await import('../src/tenant/registry.js');
 
@@ -200,12 +202,94 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   res = await post(JSON.stringify(hb()), { 'x-test-no-tenant': '1' });
   assert.equal(res.status, 403, '无租户 403');
 
+  // event 消息走 ingest 全路径（含 greeter fire-and-forget 钩子，无房间静默）不炸
+  res = await post(JSON.stringify(ev('person_enter', { seq: 9 })));
+  assert.equal(res.status, 200, 'event 消息 200（greeter 钩子静默）');
+
   // GET state 快照（验收/调试用）
   res = await app.request('/api/perception/state');
   assert.equal(res.status, 200);
   const snap = (await res.json()) as { ok: boolean; state: { presence: boolean; fresh: boolean } | null };
   assert.equal(snap.state?.presence, true, 'state 快照反映 ingest');
   console.log('✓ ingest 路由');
+}
+
+// ---------- 8. ①reminder 联动：isUserAwayFromScreen ----------
+{
+  _resetPerceptionState();
+  const t0 = 600_000;
+  // 无视觉状态：不判离开（现有行为不变的保底）
+  assert.equal(isUserAwayFromScreen('tenA', t0), false, '无状态不判离开');
+  // 在场：不离开
+  ingestPerception('tenA', hb({}, { presence: true, attention: 'screen' }), t0);
+  assert.equal(isUserAwayFromScreen('tenA', t0 + 500), false);
+  // 离席（fresh）：判离开
+  ingestPerception('tenA', hb({ seq: 2 }, { presence: false, attention: 'unknown' }), t0 + 1000);
+  assert.equal(isUserAwayFromScreen('tenA', t0 + 1500), true, '离席且fresh判离开');
+  // 探针离线（stale）：不判离开（宁可白念不可漏念）
+  assert.equal(isUserAwayFromScreen('tenA', t0 + 10_000), false, '心跳过期不判离开');
+  console.log('✓ isUserAwayFromScreen 判定');
+}
+
+// ---------- 9. ②回来打招呼：greeter 状态机 ----------
+{
+  _resetPerceptionState();
+  _resetGreeterState();
+  const t0 = 700_000;
+  const spoken: string[] = [];
+  const deps = {
+    listRooms: (tid: string) => (tid === 'tenA' ? ['room-1'] : []),
+    speak: async (_room: string, text: string) => {
+      spoken.push(text);
+    },
+  };
+
+  // 离开 60s 后回来 → 打招呼
+  await maybeGreetOnReturn('tenA', 'person_leave', t0, deps);
+  let r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 60_000, deps);
+  assert.equal(r, 'greeted', `60s 离开回来应打招呼，实际 ${r}`);
+  assert.equal(spoken.length, 1);
+
+  // 冷却期内再次 leave/enter → 不打
+  await maybeGreetOnReturn('tenA', 'person_leave', t0 + 120_000, deps);
+  r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 180_000, deps);
+  assert.equal(r, 'cooldown', '10min 冷却内不重复打招呼');
+
+  // 冷却过后：短暂离开（<30s）→ 不打（低头捡东西不算离开）
+  _resetGreeterState();
+  await maybeGreetOnReturn('tenA', 'person_leave', t0, deps);
+  r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 10_000, deps);
+  assert.equal(r, 'too-short', '短暂消失不打招呼');
+
+  // 离开太久（>30min）→ 不打
+  _resetGreeterState();
+  await maybeGreetOnReturn('tenA', 'person_leave', t0, deps);
+  r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 31 * 60_000, deps);
+  assert.equal(r, 'too-long', '离开超 30min 不打招呼');
+
+  // 无活跃房间 → 不打
+  _resetGreeterState();
+  await maybeGreetOnReturn('tenB', 'person_leave', t0, deps);
+  r = await maybeGreetOnReturn('tenB', 'person_enter', t0 + 60_000, deps);
+  assert.equal(r, 'no-room', '无活跃房间不打招呼');
+
+  // 没有 leave 直接 enter（如探针刚启动）→ 不打
+  _resetGreeterState();
+  r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 60_000, deps);
+  assert.equal(r, 'no-leave', '无离开记录不打招呼');
+
+  // speak 失败不抛（静默）
+  _resetGreeterState();
+  const failDeps = {
+    listRooms: () => ['room-x'],
+    speak: async () => {
+      throw new Error('rtc down');
+    },
+  };
+  await maybeGreetOnReturn('tenA', 'person_leave', t0, failDeps);
+  r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 60_000, failDeps);
+  assert.equal(r, 'speak-failed', 'RTC 失败静默不抛');
+  console.log('✓ greeter 状态机');
 }
 
 console.log('\nperception.test 全部通过 ✅');

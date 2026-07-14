@@ -74,5 +74,7 @@ export const config = {
     /** Vision 感知 V0（2026-07-14，默认关）：开=接受 /api/perception/ingest 上报并向
      *  LLM 注入 visionContextNote。关=端点 503 且零注入。见 docs/VISION-评估与V0方案.md。 */
     enabled: opt('VISION_ENABLED', '0') === '1',
+    /** ②走开/回来主动打招呼（VISION_ENABLED 前提下生效；出现骚扰感可单独关）。 */
+    greetingEnabled: opt('VISION_GREETING_ENABLED', '1') === '1',
   },
 } as const;
