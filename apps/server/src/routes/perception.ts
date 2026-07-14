@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
 import { config } from '../config.js';
 import { validateEnvelope, ingestPerception, getVisionState } from '../perception/state.js';
-import { maybeGreetOnReturn } from '../perception/greeter.js';
+import { maybeCareOnYawn, maybeGreetOnReturn } from '../perception/greeter.js';
 
 const MAX_BODY_BYTES = 32 * 1024; // 契约 §1：单条 ≤ 32KB
 
@@ -39,11 +39,14 @@ perceptionRoute.post('/ingest', async (c) => {
     const kind = msg.type === 'event' ? ` kind=${String((msg.payload as Record<string, unknown>).kind ?? '-')}` : '';
     console.log(`[perception] tenant=${tenant.id.slice(0, 8)} ${String(msg.type)}#${String(msg.seq)}${kind}${accepted ? '' : ' (stale-seq)'}`);
   }
-  // ②回来打招呼：leave/enter 事件喂 greeter（fire-and-forget，不阻塞 ingest 响应）
+  // ②回来打招呼 + 哈欠关怀：事件喂 greeter（fire-and-forget，不阻塞 ingest 响应）
   if (accepted && msg.type === 'event') {
-    const kind = String((msg.payload as Record<string, unknown>).kind ?? '');
+    const p = msg.payload as Record<string, unknown>;
+    const kind = String(p.kind ?? '');
     if (kind === 'person_leave' || kind === 'person_enter') {
       void maybeGreetOnReturn(tenant.id, kind).catch(() => {});
+    } else if (kind === 'expression_change') {
+      void maybeCareOnYawn(tenant.id, String(p.to ?? '')).catch(() => {});
     }
   }
   return c.json({ ok: true, accepted });

@@ -79,7 +79,7 @@ PROCESS_FPS = 15                   # 处理帧率（检测足够，省电）
 # 阈值定标依据：官方微笑人像实测 mouthSmile≈0.95（阈 0.5 裕度充分）、闭嘴 jawOpen≈0.12、
 # 睁眼 blink≈0.26；哈欠为大张嘴 jawOpen 取 0.6；闭眼≠眨眼故持续取 1.5s。
 EXPR_RULES = {
-    "smiling": {"keys": ("mouthSmileLeft", "mouthSmileRight"), "th": 0.5, "hold_ms": 800},
+    "smiling": {"keys": ("mouthSmileLeft", "mouthSmileRight"), "th": 0.65, "hold_ms": 800},  # 0.5→0.65：真机实证非笑嘴部动作(生气咧嘴/苦笑)误触发,官方标准微笑0.95仍有裕度
     "yawning": {"keys": ("jawOpen",), "th": 0.6, "hold_ms": 600},
     "eyes_closed": {"keys": ("eyeBlinkLeft", "eyeBlinkRight"), "th": 0.6, "hold_ms": 1500},
 }

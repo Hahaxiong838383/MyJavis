@@ -12,8 +12,11 @@ import { speakText } from '../providers/rtc-control.js';
 const LEAVE_MIN_MS = 30_000;
 const LEAVE_MAX_MS = 30 * 60_000;
 const GREET_COOLDOWN_MS = 10 * 60_000;
+/** 哈欠关怀冷却：比打招呼更克制（关怀说多了=唠叨），同租户半小时最多一次。 */
+const YAWN_CARE_COOLDOWN_MS = 30 * 60_000;
 
 const GREETINGS = ['欢迎回来～我还在呢。', '回来啦，有事随时叫我。', '欢迎回来，刚才聊到的还要继续吗？'];
+const YAWN_CARES = ['有点困了吧？要不要歇一会儿，或者我给你放点轻松的音乐。', '看你打哈欠了——累了就眯一会儿，我不吵你。'];
 
 interface GreeterDeps {
   listRooms: (tenantId: string) => string[];
@@ -22,12 +25,16 @@ interface GreeterDeps {
 
 const lastLeaveAt = new Map<string, number>();
 const lastGreetAt = new Map<string, number>();
+const lastYawnCareAt = new Map<string, number>();
 let greetSeq = 0; // 话术轮换游标（无随机源依赖，测试可复现）
+let careSeq = 0;
 
 export function _resetGreeterState(): void {
   lastLeaveAt.clear();
   lastGreetAt.clear();
+  lastYawnCareAt.clear();
   greetSeq = 0;
+  careSeq = 0;
 }
 
 export type GreetOutcome =
@@ -76,5 +83,33 @@ export async function maybeGreetOnReturn(
   }
   lastGreetAt.set(tenantId, now);
   console.log(`[greeter] greeted tenant=${tenantId.slice(0, 8)} away=${Math.round(awayMs / 1000)}s`);
+  return 'greeted';
+}
+
+/**
+ * 哈欠主动关怀（2026-07-14 川哥点名）：expression_change → yawning 时通话中轻声关心一句。
+ * 探针端已有 0.6 阈值+600ms 门控保真哈欠；此处只加节流（30min 冷却）与房间在场判定。
+ */
+export async function maybeCareOnYawn(
+  tenantId: string,
+  toExpression: string,
+  now = Date.now(),
+  deps: GreeterDeps = { listRooms: listAgentRooms, speak: speakText },
+): Promise<GreetOutcome> {
+  if (!config.vision.enabled || !config.vision.greetingEnabled) return 'disabled';
+  if (toExpression !== 'yawning') return 'ignored';
+  const caredAt = lastYawnCareAt.get(tenantId);
+  if (caredAt !== undefined && now - caredAt < YAWN_CARE_COOLDOWN_MS) return 'cooldown';
+  const rooms = deps.listRooms(tenantId);
+  if (!rooms.length) return 'no-room';
+  const line = YAWN_CARES[careSeq++ % YAWN_CARES.length]!;
+  try {
+    await deps.speak(rooms[0]!, line, false);
+  } catch (err) {
+    console.log(`[greeter] yawn-care speak failed tenant=${tenantId.slice(0, 8)}: ${(err as Error).message.slice(0, 60)}`);
+    return 'speak-failed';
+  }
+  lastYawnCareAt.set(tenantId, now);
+  console.log(`[greeter] yawn-care tenant=${tenantId.slice(0, 8)}`);
   return 'greeted';
 }

@@ -17,7 +17,7 @@ const {
   isUserAwayFromScreen,
   _resetPerceptionState,
 } = await import('../src/perception/state.js');
-const { maybeGreetOnReturn, _resetGreeterState } = await import('../src/perception/greeter.js');
+const { maybeGreetOnReturn, maybeCareOnYawn, _resetGreeterState } = await import('../src/perception/greeter.js');
 const { perceptionRoute } = await import('../src/routes/perception.js');
 const { createTenant } = await import('../src/tenant/registry.js');
 
@@ -335,6 +335,34 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   r = await maybeGreetOnReturn('tenA', 'person_enter', t0 + 60_000, failDeps);
   assert.equal(r, 'speak-failed', 'RTC 失败静默不抛');
   console.log('✓ greeter 状态机');
+}
+
+// ---------- 10. 哈欠主动关怀 ----------
+{
+  _resetGreeterState();
+  const t0 = 800_000;
+  const spoken: string[] = [];
+  const deps = {
+    listRooms: (tid: string) => (tid === 'tenA' ? ['room-1'] : []),
+    speak: async (_room: string, text: string) => {
+      spoken.push(text);
+    },
+  };
+  let r = await maybeCareOnYawn('tenA', 'yawning', t0, deps);
+  assert.equal(r, 'greeted', `真哈欠应关怀，实际 ${r}`);
+  assert.ok(spoken[0]?.includes('困'), '关怀话术');
+  // 30min 冷却
+  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 10 * 60_000, deps);
+  assert.equal(r, 'cooldown', '冷却内不重复关怀');
+  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 31 * 60_000, deps);
+  assert.equal(r, 'greeted', '冷却过后可再关怀');
+  // 非 yawning 表情不触发
+  r = await maybeCareOnYawn('tenA', 'smiling', t0 + 62 * 60_000, deps);
+  assert.equal(r, 'ignored', '微笑不触发关怀');
+  // 无房间静默
+  r = await maybeCareOnYawn('tenB', 'yawning', t0, deps);
+  assert.equal(r, 'no-room');
+  console.log('✓ 哈欠主动关怀');
 }
 
 console.log('\nperception.test 全部通过 ✅');
