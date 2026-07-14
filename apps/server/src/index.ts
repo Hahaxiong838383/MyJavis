@@ -25,8 +25,10 @@ import { remindersRoute } from './routes/reminders.js';
 import { syncRoute } from './routes/sync.js';
 import { privacyRoute } from './routes/privacy.js';
 import { perceptionRoute } from './routes/perception.js';
+import { memoryRefineRoute } from './routes/memory-refine.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
 import { MemoryRefiner } from './memory/refine.js';
+import { MemoryConsolidator } from './memory/consolidation.js';
 import { storage as memoryStorage } from './memory/index.js';
 import { tenantForOwner } from './voiceprint/registry.js';
 
@@ -77,6 +79,7 @@ app.route('/api/reminders', remindersRoute);
 app.route('/api/sync', syncRoute);
 app.route('/api/privacy', privacyRoute); // R2 隐私记忆通道（pending/ack/session-context）
 app.route('/api/perception', perceptionRoute); // Vision V0 感知 ingest（VISION_ENABLED 默认关）
+app.route('/api/memory', memoryRefineRoute); // R4 提炼代理（App vault 批次→LLM→决策，server 零落盘）
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 
@@ -92,6 +95,7 @@ serve(
     logProviderStatus();
     startReminderScheduler();
     new MemoryRefiner(memoryStorage, undefined, tenantForOwner).start(); // R3 批处理精修
+    new MemoryConsolidator(memoryStorage, tenantForOwner).start(); // R4 夜间异步巩固
   },
 );
 
