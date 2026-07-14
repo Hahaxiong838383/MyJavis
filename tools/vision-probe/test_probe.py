@@ -9,11 +9,23 @@ import types
 import unittest
 from unittest import mock
 
-# probe.py 顶部 import cv2/mediapipe——测试环境不需要真包，注入桩后再 import。
+# probe.py 顶部 import cv2/mediapipe（Tasks API）——测试环境不需要真包，注入桩后再 import。
 sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 _mp = types.ModuleType("mediapipe")
-_mp.solutions = types.SimpleNamespace(face_mesh=types.SimpleNamespace(FaceMesh=object))
+_tasks = types.ModuleType("mediapipe.tasks")
+_tasks_py = types.ModuleType("mediapipe.tasks.python")
+_tasks_vision = types.ModuleType("mediapipe.tasks.python.vision")
+_tasks_py.BaseOptions = object
+_tasks_vision.FaceLandmarker = object
+_tasks_vision.FaceLandmarkerOptions = object
+_tasks_vision.RunningMode = types.SimpleNamespace(VIDEO="VIDEO")
+_tasks.python = _tasks_py
+_tasks_py.vision = _tasks_vision
+_mp.tasks = _tasks
 sys.modules.setdefault("mediapipe", _mp)
+sys.modules.setdefault("mediapipe.tasks", _tasks)
+sys.modules.setdefault("mediapipe.tasks.python", _tasks_py)
+sys.modules.setdefault("mediapipe.tasks.python.vision", _tasks_vision)
 
 import probe  # noqa: E402
 

@@ -32,11 +32,18 @@ from urllib import error, request
 try:
     import cv2
     import mediapipe as mp
+    from mediapipe.tasks import python as mp_tasks
+    from mediapipe.tasks.python import vision as mp_vision
 except ImportError as e:  # pragma: no cover
     print(f"[probe] 缺依赖: {e}。先 pip install -r requirements.txt", file=sys.stderr)
     sys.exit(1)
 
 CONTRACT_VERSION = "0.2.0"
+
+# FaceLandmarker 模型（mediapipe 0.10.30+ 移除 legacy solutions，用 Tasks API；输出 landmark
+# 拓扑与 FaceMesh 468 点兼容，本文件索引不变）。首跑自动下载缓存（~3.7MB，走系统代理）。
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+MODEL_PATH = __file__.rsplit("/", 1)[0] + "/models/face_landmarker.task"
 
 # ---- 关键点索引（复制自 gesture_drag_demo/face_tracker.py，MediaPipe FaceMesh 468 点拓扑） ----
 LEFT_EYE_EAR_IDX = [33, 160, 158, 133, 153, 144]
@@ -56,9 +63,12 @@ NOD_SHAKE_WINDOW_MS = 1500         # 契约：1.5s 窗口往复 ≥2 次、幅�
 NOD_SHAKE_AMPLITUDE_DEG = 10.0
 NOD_SHAKE_COOLDOWN_MS = 2000
 REVERSAL_HYST_DEG = 3.0            # 往复方向翻转迟滞（防噪声假往复，探针自定）
-EAR_OPEN_THRESHOLD = 0.19          # eyesOpen 判定（gesture demo EAR 范式，探针自定值）
+EAR_OPEN_THRESHOLD = 0.15          # eyesOpen 判定：官方正面人像睁眼实测 EAR≈0.20，闭眼典型 <0.12
 MAR_OPEN_THRESHOLD = 0.5           # mouthOpen=张大嘴（打哈欠级；说话不算，保守）
-YAW_SCALE, PITCH_SCALE = 220.0, 260.0  # 几何偏移比例→角度的近似标定（探针粗标，V0 够用）
+# 几何比例→角度粗标定（像素域）。基线 0.47 = MediaPipe 官方正面人像 nose_dy/eye_span 实测；
+# scale 为线性近似（V0 用途仅 attention ±30° 门与 nod/shake >10° 幅度，精度契约归正式 sidecar）。
+YAW_SCALE, PITCH_SCALE = 150.0, 150.0
+NOSE_PITCH_BASELINE = 0.47
 
 HEARTBEAT_INTERVAL_S = 1.0         # 契约 L0：1Hz ± 0.2s
 PROCESS_FPS = 15                   # 处理帧率（检测足够，省电）
@@ -241,31 +251,48 @@ class ProbeState:
 
 
 # ---- 几何特征（gesture demo face_tracker 范式；landmarks 只在本函数栈内存活） ----
+# 距离一律在像素域计算：MediaPipe landmark 是宽/高各自归一化坐标，直接 hypot 混轴会被
+# 图像纵横比系统性缩放（16:9 与 4:5 下同一张脸 EAR 差 ~2x，官方测试图实测踩过）。
 
-def _dist(a, b) -> float:
-    return math.hypot(a.x - b.x, a.y - b.y)
+
+def _dist_px(a, b, w: float, h: float) -> float:
+    return math.hypot((a.x - b.x) * w, (a.y - b.y) * h)
 
 
-def ear_of(lm, idx) -> float:
+def ear_of(lm, idx, w: float, h: float) -> float:
     p1, p2, p3, p4, p5, p6 = (lm[i] for i in idx)
-    horiz = _dist(p1, p4)
-    return (_dist(p2, p6) + _dist(p3, p5)) / (2 * horiz) if horiz > 1e-6 else 0.0
+    horiz = _dist_px(p1, p4, w, h)
+    return (_dist_px(p2, p6, w, h) + _dist_px(p3, p5, w, h)) / (2 * horiz) if horiz > 1e-6 else 0.0
 
 
-def extract_features(lm) -> tuple[dict, dict]:
-    """FaceMesh landmarks → (headPose°, attrs)。几何近似标定，精度契约验收在 sidecar 正式版。"""
+def extract_features(lm, w: float, h: float) -> tuple[dict, dict]:
+    """FaceLandmarker landmarks → (headPose°, attrs)。几何近似标定，精度契约验收在 sidecar 正式版。"""
     le, re, nose = lm[LEFT_EYE_OUTER], lm[RIGHT_EYE_OUTER], lm[NOSE_TIP]
-    eye_cx, eye_cy = (le.x + re.x) / 2, (le.y + re.y) / 2
-    eye_span = max(_dist(le, re), 1e-6)
-    yaw = ((nose.x - eye_cx) / eye_span) * YAW_SCALE          # 鼻尖水平偏移比例 → 度
-    pitch = -((nose.y - eye_cy) / eye_span - 0.62) * PITCH_SCALE  # 0.62=正视时鼻尖基线占比（粗标）
-    roll = math.degrees(math.atan2(re.y - le.y, re.x - le.x))  # 双眼连线角
-    ear = (ear_of(lm, LEFT_EYE_EAR_IDX) + ear_of(lm, RIGHT_EYE_EAR_IDX)) / 2
-    mouth_h = _dist(lm[MOUTH_TOP], lm[MOUTH_BOTTOM])
-    mouth_w = max(_dist(lm[MOUTH_LEFT], lm[MOUTH_RIGHT]), 1e-6)
+    eye_cx, eye_cy = (le.x + re.x) / 2 * w, (le.y + re.y) / 2 * h
+    eye_span = max(_dist_px(le, re, w, h), 1e-6)
+    yaw = ((nose.x * w - eye_cx) / eye_span) * YAW_SCALE  # 鼻尖水平偏移比例 → 度
+    pitch = -((nose.y * h - eye_cy) / eye_span - NOSE_PITCH_BASELINE) * PITCH_SCALE
+    roll = math.degrees(math.atan2((re.y - le.y) * h, (re.x - le.x) * w))  # 双眼连线角
+    ear = (ear_of(lm, LEFT_EYE_EAR_IDX, w, h) + ear_of(lm, RIGHT_EYE_EAR_IDX, w, h)) / 2
+    mouth_h = _dist_px(lm[MOUTH_TOP], lm[MOUTH_BOTTOM], w, h)
+    mouth_w = max(_dist_px(lm[MOUTH_LEFT], lm[MOUTH_RIGHT], w, h), 1e-6)
     head_pose = {"pitch": round(pitch, 1), "yaw": round(yaw, 1), "roll": round(roll, 1)}
     attrs = {"eyesOpen": ear > EAR_OPEN_THRESHOLD, "mouthOpen": (mouth_h / mouth_w) > MAR_OPEN_THRESHOLD}
     return head_pose, attrs
+
+
+def ensure_model() -> str:
+    import os
+
+    if os.path.exists(MODEL_PATH):
+        return MODEL_PATH
+    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    print(f"[probe] 首跑下载 FaceLandmarker 模型（~3.7MB）→ {MODEL_PATH}")
+    tmp = MODEL_PATH + ".part"
+    with request.urlopen(MODEL_URL, timeout=60) as resp, open(tmp, "wb") as f:
+        f.write(resp.read())
+    os.rename(tmp, MODEL_PATH)
+    return MODEL_PATH
 
 
 def main() -> None:
@@ -276,6 +303,7 @@ def main() -> None:
     ap.add_argument("--show", action="store_true", help="调试窗口（仅本机显示，画面不外传）")
     args = ap.parse_args()
 
+    model_path = ensure_model()
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print("[probe] 摄像头打不开（检查系统设置→隐私→摄像头授权，或换 --camera 索引）", file=sys.stderr)
@@ -285,8 +313,14 @@ def main() -> None:
     sender.send("hello", {"probe": "vision-probe", "contract": CONTRACT_VERSION})
     print(f"[probe] session={sender.session_id[:8]} → {args.server}（Ctrl+C 退出）")
 
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        max_num_faces=1, refine_landmarks=False, min_detection_confidence=0.5, min_tracking_confidence=0.5
+    landmarker = mp_vision.FaceLandmarker.create_from_options(
+        mp_vision.FaceLandmarkerOptions(
+            base_options=mp_tasks.BaseOptions(model_asset_path=model_path),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
     )
     state = ProbeState(sender)
     last_hb, frame_interval = 0.0, 1.0 / PROCESS_FPS
@@ -298,13 +332,14 @@ def main() -> None:
                 time.sleep(0.2)
                 continue
             frame = cv2.resize(frame, (640, 360))  # 降采样：检测够用，省算力
-            result = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             t_ms = now_mono_ms()
-            detected = bool(result.multi_face_landmarks)
+            result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), int(t_ms))
+            detected = bool(result.face_landmarks)
             state.update_presence(detected)
             if detected and state.presence:
-                lm = result.multi_face_landmarks[0].landmark
-                head_pose, attrs = extract_features(lm)
+                lm = result.face_landmarks[0]
+                head_pose, attrs = extract_features(lm, 640, 360)
                 state.head_pose, state.attrs = head_pose, attrs
                 state.update_attention(head_pose["yaw"], head_pose["pitch"], t_ms)
                 state.update_tilt(head_pose["roll"], t_ms)
