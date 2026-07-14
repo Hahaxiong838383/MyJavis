@@ -9,6 +9,7 @@ import { pushActivity } from '../activity/feed.js';
 import { VolcIdentityProvider, ownerIdFromVoiceprint } from './identity/index.js';
 import { admitCandidate, auditId } from './admission.js';
 import { extractCorrectionIntent, extractMemoryCandidates, isInstructionInjection, maybeEscalateAmbiguousToLlm } from './candidates.js';
+import { noteMemoryWritten } from './consolidation.js';
 import type {
   GovernanceResult,
   IdentityProviderAdapter,
@@ -379,6 +380,9 @@ export class MyJavisMemory implements Memory {
         continue;
       }
       this.db.insertMemoryItem(item);
+      // R4 profile 重算触发（doc §5.2/§6 R4）：每 owner 每新增一条记忆计数一次，O(1) 内存自增，
+      // 不做任何 I/O——满 50 条才真正重算 pref_summary（见 consolidation.ts 头注）。
+      noteMemoryWritten(ownerId, this.db, input.tenantId);
       // R3 bi-temporal：update 决策 = 新事实取代旧事实——旧冲突行置 invalid（不删除，历史可溯）
       if (decision.action === 'update' && decision.conflicts.length > 0) {
         const invalidated = this.db.invalidateMemoryItems(decision.conflicts);

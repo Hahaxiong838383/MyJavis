@@ -42,6 +42,7 @@ interface MemoryRow {
   confidence: number;
   status: MemoryStatus;
   suspended?: number | null;
+  dormant?: number | null;
   valid_from: number | null;
   valid_until: number | null;
   ttl: number | null;
@@ -184,12 +185,14 @@ export class SQLiteMemoryStorage {
     this.ensureSuspendedColumn();
     this.ensureBiTemporalColumns();
     this.ensureEventLogTenantColumn();
+    this.ensureDormantColumn();
     this.db.exec(`
       DROP VIEW IF EXISTS hot_readable_memories;
       CREATE VIEW hot_readable_memories AS
         SELECT * FROM memory_item
         WHERE status IN ('committed', 'provisional')
           AND suspended = 0
+          AND dormant = 0
           AND invalid_at IS NULL
           AND (valid_until IS NULL OR valid_until > (unixepoch('now') * 1000));
 
@@ -202,6 +205,20 @@ export class SQLiteMemoryStorage {
   private ensureSuspendedColumn(): void {
     try {
       this.db.exec(`ALTER TABLE memory_item ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0;`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column name/i.test(message)) throw err;
+    }
+  }
+
+  /**
+   * R4 dormant 冷藏列（docs/memory-architecture.md §3/§6 R4）：沿用 suspended 列的容错迁移
+   * 模式（ALTER TABLE ADD COLUMN 幂等）。dormant=1 的条目物理保留但 hot_readable_memories
+   * 视图不再可见——冷藏而非删除，可在治理面板/未来运营工具里重新激活。
+   */
+  private ensureDormantColumn(): void {
+    try {
+      this.db.exec(`ALTER TABLE memory_item ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0;`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!/duplicate column name/i.test(message)) throw err;
@@ -258,6 +275,69 @@ export class SQLiteMemoryStorage {
       changed += Number(result.changes);
     }
     return changed;
+  }
+
+  /**
+   * R4 ephemeral 清理（docs/memory-architecture.md §6 R4 a）：working 层（ephemeral_context）
+   * 本就是当日弃用的通话草稿，validUntil 已过直接物理删除（不同于 semantic 层的 invalidate
+   * 软失效——working 层无溯源价值，硬删符合"多个小文件"式最小状态原则）。
+   */
+  deleteExpiredEphemeral(now = Date.now()): number {
+    const result = this.db
+      .prepare(`DELETE FROM memory_item WHERE type = 'ephemeral_context' AND valid_until IS NOT NULL AND valid_until <= ?`)
+      .run(now);
+    return Number(result.changes ?? 0);
+  }
+
+  /**
+   * R4 对账（docs/memory-architecture.md §6 R4 c）：validUntil 已自然到期但从未走过
+   * admission 冲突/精修流程的条目，invalid_at 仍是 NULL——hot_readable_memories 视图凭
+   * valid_until 时间比较已经把它们排除在热路径外，但 listOwnerMemories/exportOwner 等
+   * 不走该视图的路径（治理面板）仍会显示"看似有效"。回填 invalid_at/expired_at 让
+   * bi-temporal 状态在所有查询路径上收敛一致。复用 invalidateMemoryItems 的
+   * "invalid_at IS NULL"幂等guard，重复调用天然收敛。
+   */
+  reconcileExpiredValidity(now = Date.now()): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM memory_item
+         WHERE valid_until IS NOT NULL AND valid_until <= ? AND invalid_at IS NULL AND type != 'ephemeral_context'`,
+      )
+      .all(now) as Array<{ id: string }>;
+    return this.invalidateMemoryItems(
+      rows.map((r) => r.id),
+      now,
+    );
+  }
+
+  /**
+   * R4 dormant 冷藏候选（docs/memory-architecture.md §3/§6 R4 b）：semantic 层
+   * （preference/profile_fact——relationship/location/safety 已被 R2 隐私路由挡在云端外）
+   * 长期未被强化/新建的低 salience 条目。staleBefore = 调用方按常量阈值算好的截止时间戳
+   * （now - DORMANT_STALE_MS，见 consolidation.ts），未被 dormant 标记过的才算候选
+   * （天然幂等：已冷藏的下次查询不会再命中）。
+   */
+  listDormantCandidates(staleBefore: number, limit = 500): MemoryItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_item
+         WHERE type IN ('preference', 'profile_fact')
+           AND status != 'quarantine'
+           AND suspended = 0
+           AND dormant = 0
+           AND invalid_at IS NULL
+           AND COALESCE(last_reinforced, created_at) <= ?
+         ORDER BY created_at ASC
+         LIMIT ?`,
+      )
+      .all(staleBefore, limit) as unknown as MemoryRow[];
+    return rows.map(rowToMemoryItem);
+  }
+
+  /** 冷藏/恢复单条记忆（治理面板未来可加"取消冷藏"按钮时复用同一开关）。 */
+  setMemoryDormant(id: string, dormant: boolean): boolean {
+    const result = this.db.prepare(`UPDATE memory_item SET dormant = ? WHERE id = ?`).run(dormant ? 1 : 0, id);
+    return Number(result.changes ?? 0) > 0;
   }
 
   insertSpeakerEvidence(evidence: SpeakerEvidence): void {
@@ -625,6 +705,7 @@ function rowToMemoryItem(row: MemoryRow): MemoryItem {
     confidence: row.confidence,
     status: row.status,
     suspended: Number(row.suspended ?? 0) === 1,
+    dormant: Number(row.dormant ?? 0) === 1,
     validFrom: row.valid_from ?? undefined,
     validUntil: row.valid_until ?? undefined,
     ttl: row.ttl ?? undefined,

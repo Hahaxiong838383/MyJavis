@@ -77,4 +77,19 @@ export const config = {
     /** ②走开/回来主动打招呼（VISION_ENABLED 前提下生效；出现骚扰感可单独关）。 */
     greetingEnabled: opt('VISION_GREETING_ENABLED', '1') === '1',
   },
+
+  memoryConsolidation: {
+    /** R4 夜间异步巩固（默认开）：ephemeral 清理 + dormant 冷藏 + 对账 + profile 重算兜底。
+     *  见 docs/memory-architecture.md §5.2/§6 R4，实现 apps/server/src/memory/consolidation.ts。 */
+    enabled: opt('CONSOLIDATION_ENABLED', '1') === '1',
+    /** 本地时区跑批的目标整点（0-23，默认凌晨 4 点）。 */
+    hour: Number(opt('CONSOLIDATION_HOUR', '4')),
+  },
+
+  memoryRefineProxy: {
+    /** R4 提炼代理端点 POST /api/memory/refine（默认开）：App vault 批次 → server 转发
+     *  LLM → 结构化 ADD/UPDATE/DELETE/NONE 决策，全程内存零落盘。关=端点 503。
+     *  见 docs/memory-architecture.md §4.4，实现 apps/server/src/routes/memory-refine.ts。 */
+    enabled: opt('MEMORY_REFINE_PROXY_ENABLED', '1') === '1',
+  },
 } as const;

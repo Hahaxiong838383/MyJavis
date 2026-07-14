@@ -54,8 +54,12 @@ function buildUserPrompt(fresh: Array<[number, MemoryItem]>, related: Array<[num
   ].join('\n');
 }
 
-/** 收集流式 LLM 全文（精修不需要流式，但复用现有双 provider 赛马通道）。 */
-async function completeOnce(llm: LlmProvider, systemPrompt: string, userText: string): Promise<string> {
+/**
+ * 收集流式 LLM 全文（精修不需要流式，但复用现有双 provider 赛马通道）。
+ * R4 导出复用（memory/refine-proxy.ts 的提炼代理端点同样是"单次决策非流式"形态，
+ * 见 docs/memory-architecture.md §4.4"复用它的 prompt 设计与 LLM 调用方式"）。
+ */
+export async function completeOnce(llm: LlmProvider, systemPrompt: string, userText: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     llm
       .streamChat({
