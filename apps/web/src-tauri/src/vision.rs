@@ -91,6 +91,12 @@ pub fn vision_stop(state: tauri::State<'_, VisionManager>) {
     }
 }
 
+/// 探针是否已安装（App 启动即常开确权前的预检：未装探针的机器不该弹摄像头授权）。
+#[tauri::command]
+pub fn vision_available() -> bool {
+    resolve_probe().is_ok()
+}
+
 #[tauri::command]
 pub fn vision_status(state: tauri::State<'_, VisionManager>) -> bool {
     if let Ok(mut guard) = state.inner.lock() {

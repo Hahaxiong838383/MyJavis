@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useAppStore } from './store';
 import { apiFetch } from './api';
-import { startVisionProbe, stopVisionProbe } from './vision-bridge';
+import { startVisionProbe } from './vision-bridge';
 import { scheduleRefine } from './useMemoryRefine';
 
 /**
@@ -184,7 +184,7 @@ export function useVoiceRtc(): UseVoiceRtc {
         setConnectPhase('idle');
         setVoiceStatus('listening');
 
-        // Vision 探针随通话拉起（0.16.0）：失败/未安装静默，不影响通话
+        // 视觉常开（0.17.2）后此处为幂等兜底：探针意外挂了，通话开始自动重拉
         void startVisionProbe();
 
         // 采麦 + 发布（异步，权限慢/失败不阻塞连接与开口）
@@ -207,7 +207,6 @@ export function useVoiceRtc(): UseVoiceRtc {
           vertcRef.current?.destroyEngine?.(engine);
           engineRef.current = null;
         }
-        void stopVisionProbe(); // 连接失败兜底：探针若已拉起随之关停
         setConnected(false);
         setVoiceStatus('idle');
         setConnecting(false);
@@ -234,7 +233,7 @@ export function useVoiceRtc(): UseVoiceRtc {
   }, []);
 
   const stop = useCallback(async () => {
-    void stopVisionProbe(); // 挂断即停探针（摄像头生命周期=通话生命周期）
+    // 0.17.2 视觉常开：挂断不再停探针（App 退出/设置面板开关才停）
     scheduleRefine(); // R4：通话结束 5min 静默后触发本机 vault 提炼（见 useMemoryRefine.ts）
     const engine = engineRef.current;
     if (engine) {

@@ -87,6 +87,7 @@ pub fn run() {
             vision::vision_start,
             vision::vision_stop,
             vision::vision_status,
+            vision::vision_available,
             refine::refine_schedule
         ])
         .setup(|app| {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, clearInviteToken, getInviteToken } from '../api';
-import { setVisionEnabled, stopVisionProbe, visionEnabled, visionProbeRunning } from '../vision-bridge';
+import { setVisionEnabled, startVisionProbe, stopVisionProbe, visionEnabled, visionProbeRunning } from '../vision-bridge';
 
 /**
  * 账号设置面板（批次B）：人设 prompt（叠加在锁定基座上）+ Javis 对我的称呼 + 退出激活。
@@ -31,8 +31,11 @@ export function SettingsPanel() {
     setVisionOn(on);
     setVisionEnabled(on);
     if (!on) {
-      // 关闭立即止血（通话中也马上停摄像头）；开启则下次通话生效
+      // 关闭立即止血（马上停摄像头）
       void stopVisionProbe().then(() => setVisionRunning(false));
+    } else {
+      // 常开语义（0.17.2）：开启即拉起，不等通话
+      void startVisionProbe().then(() => void visionProbeRunning().then(setVisionRunning));
     }
   };
 
@@ -147,7 +150,7 @@ export function SettingsPanel() {
             {visionRunning ? '（运行中 🟢）' : ''}
           </label>
           <span style={styles.hint}>
-            画面仅在本机处理、绝不上传；摄像头只在通话中开启，挂断即关。首次会请求摄像头权限；开启后下次通话生效。
+            画面仅在本机处理、绝不上传；摄像头随 App 常开（0.17.2 起），退出 App 或关闭本开关即停。首次会请求摄像头权限。
           </span>
         </>
       )}

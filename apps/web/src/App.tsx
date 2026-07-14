@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useVoiceRtc } from './useVoiceRtc';
+import { startVisionProbe } from './vision-bridge';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
 import { useReminderDelivery } from './useReminders';
@@ -56,6 +57,10 @@ function MainApp() {
   usePrivacyVaultSync(); // R2 隐私 vault：拉取云端 hold → 本机落库 → server 即焚
   useSessionContextPush(connected, roomId); // R2 通话注入：vault 上行 server 内存，挂断即弃
   useMemoryRefineConsumer(); // R4 提炼代理：通话结束 5min 静默后本机 vault 批次→server→写回
+  // 视觉常开（0.17.2 川哥拍板）：App 启动即拉起探针，不再随通话启停（App 退出/开关关才停）
+  useEffect(() => {
+    void startVisionProbe();
+  }, []);
   const memoryGuidance = useMemoryGuidanceBanner(); // 零声纹引导：家庭模式=⚠️记忆未激活警示 / 单人模式=💡温和引导
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);

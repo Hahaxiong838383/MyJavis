@@ -1,11 +1,13 @@
 /**
- * Vision 探针桥（0.16.0）：通话生命周期绑定的摄像头感知进程。
+ * Vision 探针桥（0.17.2 起 App 常开，2026-07-14 川哥拍板）：
  *
- * - 进房成功 → startVisionProbe()：Tauri 拉起本机探针（摄像头绿灯只在通话中亮）。
- * - 挂断 → stopVisionProbe()。
- * - 浏览器环境 / 开关关 / 探针未安装（其他用户机器）→ 全部静默 no-op，通话零影响。
+ * - App 启动（App.tsx mount）→ startVisionProbe()：探针随 App 常开（绿灯 App 期间常亮），
+ *   非通话时段感知照常积累（reminder 触达判定/开场上下文）。
+ * - 通话开始再调一次 = 幂等兜底（探针意外挂了自动重拉）。
+ * - 停止：App 退出（Rust 兜底 kill）或设置面板开关关闭；挂断不再停。
+ * - 预检 vision_available：未装探针的机器不弹摄像头授权，全静默 no-op。
  *
- * 开关：localStorage jv_vision_enabled（'0'=关；默认开——未装探针的机器本来就无行为）。
+ * 开关：localStorage jv_vision_enabled（'0'=关；默认开）。
  */
 import { API_BASE, currentApiKey } from './api.js';
 
@@ -32,6 +34,13 @@ export function setVisionEnabled(on: boolean): void {
 
 export async function startVisionProbe(): Promise<void> {
   if (!isTauri() || !visionEnabled()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    // 预检：探针未安装（内测用户机器）直接静默——不弹摄像头授权不留悬念
+    if (!(await invoke('vision_available'))) return;
+  } catch {
+    return;
+  }
   try {
     // 确权前置（真机实证 2026-07-14）：TCC 对 spawn 的子进程静默拒绝且不弹窗（子进程无
     // GUI 上下文）。WebView getUserMedia 的 TCC 主体=App 本身（KWS 麦克风同链路已验证），
