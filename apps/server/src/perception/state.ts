@@ -30,8 +30,9 @@ export interface PerceptionEnvelope {
 
 interface FaceNode {
   emotion?: { label: string; confidence?: number };
-  /** v0.3 级联：blendshape 高置信瞬时表情（与 emotion 七类正交，探针宁漏勿误门控后才上报）。 */
-  expression?: { label: 'smiling' | 'yawning' | 'eyes_closed'; confidence?: number };
+  /** v0.3 级联：blendshape 高置信瞬时表情（与 emotion 七类正交，探针宁漏勿误门控后才上报）。
+   *  v0.3.1 增补 frowning/sad（Owner 拍板 demo 全面测试负面情绪回应）。 */
+  expression?: { label: 'smiling' | 'yawning' | 'eyes_closed' | 'frowning' | 'sad'; confidence?: number };
   headPose?: { pitch: number; yaw: number; roll: number };
   attrs?: { eyesOpen?: boolean; mouthOpen?: boolean; glasses?: boolean };
 }
@@ -197,6 +198,8 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
     smiling: '用户脸上带着微笑。',
     yawning: '用户刚打了个哈欠，可能有点困。',
     eyes_closed: '用户闭着眼睛。',
+    frowning: '用户皱着眉，看起来有点不高兴或在纠结什么——可以自然地关心一下，或者用你的方式让气氛轻松点。',
+    sad: '用户看起来情绪有些低落——适度温柔一点，别硬灌鸡汤。',
   };
   const exprPart = (s.presence && s.face?.expression && EXPR_TEXT[s.face.expression.label]) || '';
   const objs = (s.objects ?? [])
@@ -217,6 +220,8 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
     `需要时自然地运用这个感知回应（比如用户问"你能看到我吗"就如实描述），只基于以上信息、` +
     `不要脑补画面细节（衣着颜色/文字等你看不到的不要编）。表情/情绪只有上面明确给出时才提；` +
     `没给出时用户问表情，就如实说"看不出有什么特别的表情"，绝不要猜测或用"放松/开心"之类形容凑数。` +
+    `画面物体同理：只有上面列出的才算你看到的；用户拿起/指着某个东西问你，而列表里没有，` +
+    `就如实说"我没看清那是什么"，绝不要顺着用户的话把它编出来。` +
     `不要念字段名，也不要每轮都主动提你在看着。`
   );
 }

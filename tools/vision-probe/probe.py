@@ -82,15 +82,19 @@ EXPR_RULES = {
     "smiling": {"keys": ("mouthSmileLeft", "mouthSmileRight"), "th": 0.65, "hold_ms": 800},  # 0.5→0.65：真机实证非笑嘴部动作(生气咧嘴/苦笑)误触发,官方标准微笑0.95仍有裕度
     "yawning": {"keys": ("jawOpen",), "th": 0.6, "hold_ms": 600},
     "eyes_closed": {"keys": ("eyeBlinkLeft", "eyeBlinkRight"), "th": 0.6, "hold_ms": 1500},
+    # 负面两桶（2026-07-14 川哥拍板 demo 全面测试）：初值按 blendshape 典型幅度保守给，
+    # 真机日志（[hb] 行 bs[...] 调试分量）校准迭代。frowning=皱眉(生气样)、sad=撇嘴+眉心上提(低落样)。
+    "frowning": {"keys": ("browDownLeft", "browDownRight"), "th": 0.5, "hold_ms": 800},
+    "sad": {"keys": ("mouthFrownLeft", "mouthFrownRight"), "th": 0.35, "hold_ms": 1000},
 }
 EXPR_NEUTRAL_HOLD_MS = 800          # 条件消失持续这么久才回 neutral
 EXPR_CHANGE_COOLDOWN_MS = 3000      # 契约 §2：同向变化 3s 冷却
 
 # ---- 级联切片2：物体检测（契约 v0.3 heartbeat.objects；滑窗投票平滑防逐帧闪烁） ----
 OBJ_DETECT_EVERY_N = 8              # 15fps 处理循环里每 8 帧跑一次 ≈ 2fps
-OBJ_SCORE_THRESHOLD = 0.45
+OBJ_SCORE_THRESHOLD = 0.35  # 0.45→0.35：真机手持鼠标/瓶子漏检(近距畸变+遮挡分数低)
 OBJ_WINDOW_MS = 10_000              # 滑窗：窗内命中 ≥3 次判在场，0 次判离场
-OBJ_MIN_HITS = 3
+OBJ_MIN_HITS = 2                    # 3→2：手持展示几秒即放下,降攒帧门槛
 OBJ_TOP_N = 5                       # 心跳最多报 5 个（契约上限 8）
 
 # COCO 80 类中文映射（EfficientDet-Lite0 标签集；person 已在 detector denylist 过滤）
@@ -498,11 +502,20 @@ def main() -> None:
                 if result.face_blendshapes:
                     scores = {c.category_name: c.score for c in result.face_blendshapes[0]}
                     state.update_expression(scores, t_ms)
+                    state.last_bs_debug = (
+                        f"bd={max(scores.get('browDownLeft',0),scores.get('browDownRight',0)):.2f} "
+                        f"mf={max(scores.get('mouthFrownLeft',0),scores.get('mouthFrownRight',0)):.2f} "
+                        f"sm={max(scores.get('mouthSmileLeft',0),scores.get('mouthSmileRight',0)):.2f} "
+                        f"jo={scores.get('jawOpen',0):.2f}"
+                    )
 
             # 切片2：物体检测 ~2fps（每 8 帧），滑窗投票平滑
             if frame_no % OBJ_DETECT_EVERY_N == 0:
                 obj_result = obj_detector.detect_for_video(mp_img, int(t_ms))
                 state.objects.push(obj_result.detections, t_ms, 640)
+                if obj_result.detections:  # raw 检出日志（平滑前），校准/排障用
+                    raw = ",".join(f"{d.categories[0].category_name}:{d.categories[0].score:.2f}" for d in obj_result.detections)
+                    print(f"[obj-raw] {raw}")
 
             if time.monotonic() - last_hb >= HEARTBEAT_INTERVAL_S:
                 last_hb = time.monotonic()
@@ -513,7 +526,8 @@ def main() -> None:
                 print(
                     f"[hb] presence={state.presence} attention={state.attention} "
                     f"expr={state.expr.current} objs=[{objs}] "
-                    f"yaw={hp.get('yaw', '-')} pitch={hp.get('pitch', '-')} roll={hp.get('roll', '-')}"
+                    f"yaw={hp.get('yaw', '-')} pitch={hp.get('pitch', '-')} roll={hp.get('roll', '-')} "
+                    f"bs[{getattr(state, 'last_bs_debug', '-')}]"
                 )
 
             if args.show:

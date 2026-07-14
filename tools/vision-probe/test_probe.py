@@ -200,8 +200,9 @@ class TestObjectTracker(unittest.TestCase):
     def test_flicker_not_reported(self):
         ot = probe.ObjectTracker()
         ot.push([FakeDet("dog", 0.6, 320)], 0, 640)
+        self.assertEqual(ot.stable_list(100), [], "单帧闪烁不报（<MIN_HITS=2）")
         ot.push([FakeDet("dog", 0.6, 320)], 500, 640)
-        self.assertEqual(ot.stable_list(600), [], "命中 <3 次不报")
+        self.assertEqual(len(ot.stable_list(600)), 1, "命中 2 次即报（手持展示场景）")
 
     def test_gone_after_window(self):
         ot = probe.ObjectTracker()

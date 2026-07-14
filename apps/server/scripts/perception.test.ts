@@ -191,6 +191,26 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   assert.ok(note?.includes('哈欠'), `哈欠文案，实际: ${note}`);
   assert.ok(!note?.includes('杯子'), '新心跳无 objects 则不再提旧物体');
 
+  // v0.3.1 负面表情文案（frowning 带安抚提示）
+  ingestPerception(
+    'tenA',
+    hb({ seq: 1, session_id: 'sess-neg-0001' }, {
+      presence: true,
+      attention: 'screen',
+      face: { headPose: { pitch: 0, yaw: 0, roll: 0 }, expression: { label: 'frowning', confidence: 0.7 } },
+    }),
+    t0 + 1200,
+  );
+  note = buildVisionContextNote('tenA', t0 + 1700);
+  assert.ok(note?.includes('皱着眉'), `frowning 文案，实际: ${note}`);
+  ingestPerception('tenA', hb({ session_id: 'sess-neg-0001', seq: 2 }, {
+    presence: true, attention: 'screen',
+    face: { headPose: { pitch: 0, yaw: 0, roll: 0 }, expression: { label: 'sad', confidence: 0.6 } },
+  }), t0 + 1800);
+  note = buildVisionContextNote('tenA', t0 + 1900);
+  assert.ok(note?.includes('低落'), `sad 文案，实际: ${note}`);
+  assert.ok(note?.includes('没看清'), '防编物体指令在位');
+
   // v0.2 消息（无 expression/objects）向后兼容：行为与既有一致
   ingestPerception('tenA', hb({ seq: 3 }, { presence: true, attention: 'screen' }), t0 + 2000);
   note = buildVisionContextNote('tenA', t0 + 2500);

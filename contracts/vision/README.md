@@ -1,4 +1,4 @@
-# 视觉感知契约(PerceptionEvent)v0.3 —— Owner 已裁决
+# 视觉感知契约(PerceptionEvent)v0.3.1 —— Owner 已裁决
 
 > 本目录是契约唯一源头(core/contracts/vision/)。协作仓中的 contracts/ 为只读副本,
 > 由 scripts/sync-contracts.sh 单向下发。修改权仅在 Owner;消费者视角的意见走协作仓 issue。
@@ -11,7 +11,8 @@
 - L0 heartbeat.payload 新增可选 `objects` 节(≤8 项):本地物体检测的**时间平滑后稳定列表**
   `{ label(COCO 英文), labelZh(中文), pos(left/center/right 粗位), confidence }`。
   上报"滑窗投票稳定在场"的物体,不上报逐帧闪烁;帧与检测框坐标不出采集进程。
-- L0 face 新增可选 `expression` 节:`{ label ∈ smiling/yawning/eyes_closed, confidence }`。
+- L0 face 新增可选 `expression` 节:`{ label ∈ smiling/yawning/eyes_closed/frowning/sad, confidence }`
+  （frowning/sad 为 0.3.1 增补——Owner 拍板 demo 阶段全面测试负面情绪回应能力）。
   与 `emotion`(分类器七类,归 sidecar 正式版)**正交**——expression 是 blendshape/几何高置信
   瞬时信号(阈值+持续时间门控,宁漏勿误),两者可并存。
 - L1 `expression_change` 的 from/to 值域扩展:在七类表情基础上追加 expression 三值 + neutral。
