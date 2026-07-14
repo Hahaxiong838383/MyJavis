@@ -11,7 +11,7 @@ import { useSyncRefresh } from '../useSyncVersions';
 
 interface ActivityEventDto {
   ts: number;
-  kind: 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction' | 'quarantine';
+  kind: 'recall' | 'write' | 'privacy_route' | 'invalidate' | 'refine' | 'correction' | 'quarantine' | 'consolidation';
   summary: string;
   detail?: Record<string, unknown>;
 }
@@ -24,6 +24,8 @@ const KIND_META: Record<ActivityEventDto['kind'], { icon: string; label: string;
   refine: { icon: '🧠', label: '精修', color: '#c4b5fd' },
   correction: { icon: '✍️', label: '纠正', color: '#f9a8d4' },
   quarantine: { icon: '📥', label: '暂存', color: '#fbbf24' },
+  // R4 夜间巩固（ephemeral 清理/dormant 冷藏/画像重算）活动事件，见 memory/consolidation.ts。
+  consolidation: { icon: '🌙', label: '巩固', color: '#7dd3fc' },
 };
 
 function timeLabel(ts: number): string {

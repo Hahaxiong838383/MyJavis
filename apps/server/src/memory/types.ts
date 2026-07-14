@@ -69,6 +69,9 @@ export interface MemoryItem {
   confidence: number;
   status: MemoryStatus;
   suspended?: boolean;
+  /** R4 dormant 冷藏（docs/memory-architecture.md §3/§6 R4）：低 salience 的 semantic 记忆
+   *  长期未被召回/强化 → 冷藏，检索不再扫描但物理保留（不删）。见 storage.ts listDormantCandidates。 */
+  dormant?: boolean;
   validFrom?: number;
   validUntil?: number;
   ttl?: number;
