@@ -17,7 +17,8 @@ const {
   isUserAwayFromScreen,
   _resetPerceptionState,
 } = await import('../src/perception/state.js');
-const { maybeGreetOnReturn, maybeCareOnYawn, _resetGreeterState } = await import('../src/perception/greeter.js');
+const { maybeGreetOnReturn, maybeCareOnYawn, maybeReactToExpression, _resetGreeterState } = await import('../src/perception/greeter.js');
+const { noteExpressionEvent } = await import('../src/perception/state.js');
 const { perceptionRoute } = await import('../src/routes/perception.js');
 const { createTenant } = await import('../src/tenant/registry.js');
 
@@ -388,6 +389,66 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   r = await maybeCareOnYawn('tenB', 'yawning', t0, deps);
   assert.equal(r, 'no-room');
   console.log('✓ 哈欠主动关怀');
+}
+
+// ---------- 11. 表情主动交互（全表情反应+三层防骚扰） ----------
+{
+  _resetGreeterState();
+  const t0 = 900_000;
+  const spoken: string[] = [];
+  const deps = {
+    listRooms: (tid: string) => (tid === 'tenA' ? ['room-1'] : []),
+    speak: async (_room: string, text: string) => {
+      spoken.push(text);
+    },
+  };
+  // frowning → 关心/调侃
+  let r = await maybeReactToExpression('tenA', 'frowning', t0, deps);
+  assert.equal(r, 'greeted');
+  assert.ok(spoken[0]?.includes('眉'), `皱眉话术，实际 ${spoken[0]}`);
+  // 全局冷却：5min 后换 sad 也不说（任意两次主动开口 ≥10min）
+  r = await maybeReactToExpression('tenA', 'sad', t0 + 5 * 60_000, deps);
+  assert.equal(r, 'cooldown', '全局冷却拦截连环骚扰');
+  // 全局冷却过后 sad 触发
+  r = await maybeReactToExpression('tenA', 'sad', t0 + 11 * 60_000, deps);
+  assert.equal(r, 'greeted');
+  // smiling 触发一次后 60min 冷却
+  r = await maybeReactToExpression('tenA', 'smiling', t0 + 22 * 60_000, deps);
+  assert.equal(r, 'greeted');
+  r = await maybeReactToExpression('tenA', 'smiling', t0 + 55 * 60_000, deps);
+  assert.equal(r, 'cooldown', 'smiling 60min 独立冷却');
+  // eyes_closed / neutral 不响应（想静静）
+  r = await maybeReactToExpression('tenA', 'eyes_closed', t0 + 120 * 60_000, deps);
+  assert.equal(r, 'ignored');
+  r = await maybeReactToExpression('tenA', 'neutral', t0 + 121 * 60_000, deps);
+  assert.equal(r, 'ignored');
+  console.log('✓ 表情主动交互');
+}
+
+// ---------- 12. 开场关怀：30min 负面表情摘要 ----------
+{
+  _resetPerceptionState();
+  const t0 = 1_000_000;
+  ingestPerception('tenA', hb({}, { presence: true, attention: 'screen' }), t0);
+  // 1 次负面：不带摘要
+  noteExpressionEvent('tenA', 'frowning', t0 - 10 * 60_000);
+  let note = buildVisionContextNote('tenA', t0 + 500);
+  assert.ok(!note?.includes('过去半小时'), '<2 次不带摘要');
+  // 2 次负面：带摘要
+  noteExpressionEvent('tenA', 'sad', t0 - 5 * 60_000);
+  note = buildVisionContextNote('tenA', t0 + 500);
+  assert.ok(note?.includes('过去半小时') && note.includes('2 次'), `开场关怀摘要，实际: ${note}`);
+  // 30min 窗外过期
+  note = buildVisionContextNote('tenA', t0 + 26 * 60_000);
+  assert.ok(!note?.includes('过去半小时'), '窗外过期不再提');
+  // smiling 不计入负面
+  _resetPerceptionState();
+  ingestPerception('tenA', hb({}, { presence: true, attention: 'screen' }), t0);
+  noteExpressionEvent('tenA', 'smiling', t0);
+  noteExpressionEvent('tenA', 'smiling', t0 + 1000);
+  note = buildVisionContextNote('tenA', t0 + 2000);
+  assert.ok(!note?.includes('过去半小时'), '微笑不触发关怀摘要');
+  console.log('✓ 开场关怀摘要');
 }
 
 console.log('\nperception.test 全部通过 ✅');

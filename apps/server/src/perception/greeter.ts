@@ -33,6 +33,8 @@ export function _resetGreeterState(): void {
   lastLeaveAt.clear();
   lastGreetAt.clear();
   lastYawnCareAt.clear();
+  lastReactAt.clear();
+  lastGlobalReactAt.clear();
   greetSeq = 0;
   careSeq = 0;
 }
@@ -87,29 +89,81 @@ export async function maybeGreetOnReturn(
 }
 
 /**
- * 哈欠主动关怀（2026-07-14 川哥点名）：expression_change → yawning 时通话中轻声关心一句。
- * 探针端已有 0.6 阈值+600ms 门控保真哈欠；此处只加节流（30min 冷却）与房间在场判定。
+ * 表情主动交互（2026-07-14 川哥点名扩展）：expression_change 事件驱动，通话中 Javis
+ * 主动开口回应表情。话术按 Javis 人格设计（安抚/调侃/陪伴）；eyes_closed 刻意不响应
+ * （闭眼=想静静，主动说话是骚扰）。三层防骚扰：每类独立冷却 + 全局主动开口冷却 10min
+ * + VISION_GREETING_ENABLED 总开关。
  */
-export async function maybeCareOnYawn(
+const EXPRESSION_REACTIONS: Record<string, { lines: string[]; cooldownMs: number }> = {
+  yawning: {
+    lines: YAWN_CARES,
+    cooldownMs: YAWN_CARE_COOLDOWN_MS,
+  },
+  frowning: {
+    lines: [
+      '看你眉头皱得——遇到什么难题了？说来听听，两个脑子总比一个强。',
+      '皱着眉呢。需要我帮你想想，还是给你讲个冷笑话放松一下？',
+    ],
+    cooldownMs: 30 * 60_000,
+  },
+  sad: {
+    lines: [
+      '感觉你情绪不太高……想聊聊吗？不想说也没关系，我陪着。',
+      '看你有点蔫，要不要放首你喜欢的歌？',
+    ],
+    cooldownMs: 30 * 60_000,
+  },
+  smiling: {
+    // 微笑最高频（聊天/看视频都会笑），冷却加倍防骚扰
+    lines: ['笑得这么开心，有什么好事儿？分享一下呗。'],
+    cooldownMs: 60 * 60_000,
+  },
+};
+/** 全局主动开口冷却：任意两次表情主动交互间隔下限（防连环骚扰）。 */
+const GLOBAL_REACT_COOLDOWN_MS = 10 * 60_000;
+
+const lastReactAt = new Map<string, number>(); // `${tenantId}:${expr}` → ts
+const lastGlobalReactAt = new Map<string, number>(); // tenantId → ts
+
+export async function maybeReactToExpression(
   tenantId: string,
   toExpression: string,
   now = Date.now(),
   deps: GreeterDeps = { listRooms: listAgentRooms, speak: speakText },
 ): Promise<GreetOutcome> {
   if (!config.vision.enabled || !config.vision.greetingEnabled) return 'disabled';
-  if (toExpression !== 'yawning') return 'ignored';
-  const caredAt = lastYawnCareAt.get(tenantId);
-  if (caredAt !== undefined && now - caredAt < YAWN_CARE_COOLDOWN_MS) return 'cooldown';
+  const rule = EXPRESSION_REACTIONS[toExpression];
+  if (!rule) return 'ignored'; // neutral/eyes_closed 等不响应
+  const key = `${tenantId}:${toExpression}`;
+  const reactedAt = lastReactAt.get(key);
+  if (reactedAt !== undefined && now - reactedAt < rule.cooldownMs) return 'cooldown';
+  const globalAt = lastGlobalReactAt.get(tenantId);
+  if (globalAt !== undefined && now - globalAt < GLOBAL_REACT_COOLDOWN_MS) return 'cooldown';
   const rooms = deps.listRooms(tenantId);
   if (!rooms.length) return 'no-room';
-  const line = YAWN_CARES[careSeq++ % YAWN_CARES.length]!;
+  const line = rule.lines[careSeq++ % rule.lines.length]!;
   try {
     await deps.speak(rooms[0]!, line, false);
   } catch (err) {
-    console.log(`[greeter] yawn-care speak failed tenant=${tenantId.slice(0, 8)}: ${(err as Error).message.slice(0, 60)}`);
+    console.log(`[greeter] expr-react speak failed tenant=${tenantId.slice(0, 8)}: ${(err as Error).message.slice(0, 60)}`);
     return 'speak-failed';
   }
-  lastYawnCareAt.set(tenantId, now);
-  console.log(`[greeter] yawn-care tenant=${tenantId.slice(0, 8)}`);
+  lastReactAt.set(key, now);
+  lastGlobalReactAt.set(tenantId, now);
+  console.log(`[greeter] expr-react tenant=${tenantId.slice(0, 8)} expr=${toExpression}`);
   return 'greeted';
+}
+
+/** @deprecated 0.17.2 起由 maybeReactToExpression 统辖；保留别名兼容既有测试。 */
+export async function maybeCareOnYawn(
+  tenantId: string,
+  toExpression: string,
+  now = Date.now(),
+  deps: GreeterDeps = { listRooms: listAgentRooms, speak: speakText },
+): Promise<GreetOutcome> {
+  if (toExpression !== 'yawning') {
+    if (!config.vision.enabled || !config.vision.greetingEnabled) return 'disabled';
+    return 'ignored';
+  }
+  return maybeReactToExpression(tenantId, toExpression, now, deps);
 }

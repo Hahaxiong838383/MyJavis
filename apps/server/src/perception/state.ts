@@ -75,8 +75,22 @@ export interface VisionStateSnapshot {
 
 const states = new Map<string, TenantVisionState>();
 
+/** 表情事件长窗（30min）：视觉常开后非通话时段的感知积累，开场关怀摘要消费。零持久化。 */
+const EXPR_HISTORY_WINDOW_MS = 30 * 60_000;
+const exprHistory = new Map<string, Array<{ expr: string; at: number }>>();
+
+export function noteExpressionEvent(tenantId: string, expr: string, now = Date.now()): void {
+  if (expr === 'neutral') return;
+  const list = exprHistory.get(tenantId) ?? [];
+  list.push({ expr, at: now });
+  while (list.length && now - list[0]!.at > EXPR_HISTORY_WINDOW_MS) list.shift();
+  if (list.length > 60) list.splice(0, list.length - 60);
+  exprHistory.set(tenantId, list);
+}
+
 export function _resetPerceptionState(): void {
   states.clear();
+  exprHistory.clear();
 }
 
 export function validateEnvelope(msg: unknown): { ok: boolean; error?: string } {
@@ -230,8 +244,13 @@ export function buildVisionContextNote(tenantId: string, now = Date.now()): stri
     })
     .join('、');
   const recentPart = recent ? `刚刚：${recent}。` : '';
+  // 开场关怀（视觉常开的跨时段消费）：过去 30min 负面表情 ≥2 次 → 首轮对话自然带出关心
+  const hist = exprHistory.get(tenantId) ?? [];
+  const negCount = hist.filter((h) => (h.expr === 'frowning' || h.expr === 'sad') && now - h.at <= EXPR_HISTORY_WINDOW_MS).length;
+  const moodPart =
+    negCount >= 2 ? `另外，过去半小时里用户皱眉/情绪低落了 ${negCount} 次——如果对话里合适，可以自然地关心一句（别开场就查户口）。` : '';
   return (
-    `[视觉感知] 你接入了一路摄像头视觉，当前画面：${sight}${exprPart}${objsPart}${recentPart}` +
+    `[视觉感知] 你接入了一路摄像头视觉，当前画面：${sight}${exprPart}${objsPart}${recentPart}${moodPart}` +
     `需要时自然地运用这个感知回应（比如用户问"你能看到我吗"就如实描述），只基于以上信息、` +
     `不要脑补画面细节（衣着颜色/文字等你看不到的不要编）。表情/情绪只有上面明确给出时才提；` +
     `没给出时用户问表情，就如实说"看不出有什么特别的表情"，绝不要猜测或用"放松/开心"之类形容凑数。` +

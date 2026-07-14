@@ -11,7 +11,8 @@ import { Hono } from 'hono';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
 import { config } from '../config.js';
 import { validateEnvelope, ingestPerception, getVisionState } from '../perception/state.js';
-import { maybeCareOnYawn, maybeGreetOnReturn } from '../perception/greeter.js';
+import { maybeGreetOnReturn, maybeReactToExpression } from '../perception/greeter.js';
+import { noteExpressionEvent } from '../perception/state.js';
 
 const MAX_BODY_BYTES = 32 * 1024; // 契约 §1：单条 ≤ 32KB
 
@@ -46,7 +47,9 @@ perceptionRoute.post('/ingest', async (c) => {
     if (kind === 'person_leave' || kind === 'person_enter') {
       void maybeGreetOnReturn(tenant.id, kind).catch(() => {});
     } else if (kind === 'expression_change') {
-      void maybeCareOnYawn(tenant.id, String(p.to ?? '')).catch(() => {});
+      const to = String(p.to ?? '');
+      noteExpressionEvent(tenant.id, to); // 长窗计数（开场关怀摘要用）
+      void maybeReactToExpression(tenant.id, to).catch(() => {});
     }
   }
   return c.json({ ok: true, accepted });
