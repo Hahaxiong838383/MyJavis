@@ -75,7 +75,7 @@ YAW_SCALE, PITCH_SCALE = 150.0, 150.0
 NOSE_PITCH_BASELINE = 0.47
 
 HEARTBEAT_INTERVAL_S = 1.0         # 契约 L0：1Hz ± 0.2s
-PROCESS_FPS = 15                   # 处理帧率（检测足够，省电）
+PROCESS_FPS = 30                   # 15→30（2026-07-14 川哥点名实时性拉满）：M 系芯片全速无压力
 
 # ---- 级联切片1：blendshape 表情三桶（契约 v0.3 face.expression；宁漏勿误：高阈值+持续门控） ----
 # 阈值定标依据：官方微笑人像实测 mouthSmile≈0.95（阈 0.5 裕度充分）、闭嘴 jawOpen≈0.12、
@@ -95,7 +95,7 @@ EXPR_NEUTRAL_HOLD_MS = 800          # 条件消失持续这么久才回 neutral
 EXPR_CHANGE_COOLDOWN_MS = 3000      # 契约 §2：同向变化 3s 冷却
 
 # ---- 级联切片2：物体检测（契约 v0.3 heartbeat.objects；滑窗投票平滑防逐帧闪烁） ----
-OBJ_DETECT_EVERY_N = 8              # 15fps 处理循环里每 8 帧跑一次 ≈ 2fps
+OBJ_DETECT_EVERY_N = 5              # 30fps 下每 5 帧 ≈ 6fps（2→6fps：手持物体首检延迟 0.5s→0.17s；lite2 55ms×6≈33% 单核）
 OBJ_SCORE_THRESHOLD = 0.35  # 0.45→0.35：真机手持鼠标/瓶子漏检(近距畸变+遮挡分数低)
 OBJ_WINDOW_MS = 10_000              # 滑窗：窗内命中 ≥3 次判在场，0 次判离场
 OBJ_MIN_HITS = 2                    # 3→2：手持展示几秒即放下,降攒帧门槛
