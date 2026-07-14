@@ -20,9 +20,12 @@ vision-probe —— MyJavis Vision V0 联调探针（core 侧参考采集端，2
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
+import os
 import sys
+import threading
 import time
 import uuid
 from collections import deque
@@ -136,18 +139,21 @@ class Sender:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     seq: int = 0
     _last_err_log: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, msg_type: str, payload: dict) -> bool:
+        with self._lock:  # look 线程与主循环共用：seq 分配原子化
+            my_seq = self.seq
+            self.seq += 1
         body = {
             "v": CONTRACT_VERSION,
             "type": msg_type,
-            "seq": self.seq,
+            "seq": my_seq,
             "session_id": self.session_id,
             "ts_mono_ms": now_mono_ms(),
             "ts_wall_ms": time.time() * 1000.0,
             "payload": payload,
         }
-        self.seq += 1
         data = json.dumps(body).encode("utf-8")
         req = request.Request(
             f"{self.server}/api/perception/ingest",
@@ -284,6 +290,107 @@ class ObjectTracker:
             })
         out.sort(key=lambda o: -o["confidence"])
         return out[:OBJ_TOP_N]
+
+
+# ---- 切片3：look_closely 按需细看（2026-07-14 川哥拍板） ----
+# 用户问开放视觉问题 → server 登记请求 → 本线程轮询取走 → 抓当前帧直调云 VLM
+# （帧 Mac→火山，不经 MyJavis server）→ 描述文本按契约 semantic 上报 → server 插播。
+ARK_VLM_URL = "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+ARK_VLM_MODEL = "doubao-seed-2.0-lite"  # 同日盘点实测：收图稳/中文质量高/~4.5s
+LOOK_POLL_INTERVAL_S = 2.0
+SECRETS_FILE = os.path.expanduser("~/.mycc-secrets.env")
+
+
+def load_ark_key() -> str:
+    """从本机 secrets 文件读 ARK key（不入代码不入探针参数——App 无需知晓）。"""
+    try:
+        with open(SECRETS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("ARK_CODING_KEY="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+class LookWorker(threading.Thread):
+    """细看请求轮询线程：latest_frame 由主循环每帧刷新（引用赋值原子），取用时 copy。"""
+
+    def __init__(self, sender: Sender) -> None:
+        super().__init__(daemon=True)
+        self.sender = sender
+        self.latest_frame = None  # BGR ndarray，主循环写入
+        self.ark_key = load_ark_key()
+
+    def run(self) -> None:
+        if not self.ark_key:
+            print("[look] ARK_CODING_KEY 缺失（~/.mycc-secrets.env），细看功能不启用")
+            return
+        print("[look] worker started (poll 2s)")
+        while True:
+            time.sleep(LOOK_POLL_INTERVAL_S)
+            try:
+                q = self._poll()
+                if q is not None:
+                    self._handle(q)
+            except Exception as e:  # noqa: BLE001 —— 轮询线程绝不能死
+                print(f"[look] worker error(continue): {e}", file=sys.stderr)
+
+    def _poll(self) -> str | None:
+        req = request.Request(
+            f"{self.sender.server}/api/perception/describe-request",
+            headers={"X-Javis-Key": self.sender.key},
+        )
+        try:
+            with request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                r = data.get("request")
+                return str(r.get("question", "")) if r else None
+        except (error.URLError, error.HTTPError, TimeoutError, OSError):
+            return None
+
+    def _handle(self, question: str) -> None:
+        t0 = time.monotonic()
+        frame = self.latest_frame
+        if frame is None:
+            self.sender.send("semantic", {"description": ""})
+            return
+        ok, jpg = cv2.imencode(".jpg", frame.copy(), [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            self.sender.send("semantic", {"description": ""})
+            return
+        b64 = base64.b64encode(jpg.tobytes()).decode("ascii")
+        desc = self._call_vlm(b64, question)
+        latency = round((time.monotonic() - t0) * 1000)
+        print(f"[look] q=\"{question[:30]}\" → \"{desc[:50]}\" ({latency}ms)")
+        self.sender.send("semantic", {"description": desc[:500], "latency_ms": latency})
+
+    def _call_vlm(self, jpg_b64: str, question: str) -> str:
+        body = json.dumps({
+            "model": ARK_VLM_MODEL,
+            "max_tokens": 150,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{jpg_b64}"}},
+                    {"type": "text", "text": f"看这张摄像头画面，用一两句中文口语直接回答这个问题：{question}。只说答案本身，看不清就说看不清，不要编造。"},
+                ],
+            }],
+        }).encode("utf-8")
+        req = request.Request(
+            ARK_VLM_URL,
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.ark_key}"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        except (error.URLError, error.HTTPError, TimeoutError, OSError) as e:
+            print(f"[look] vlm failed: {getattr(e, 'code', None) or getattr(e, 'reason', e)}", file=sys.stderr)
+            return ""
 
 
 class ProbeState:
@@ -486,6 +593,8 @@ def main() -> None:
         )
     )
     state = ProbeState(sender)
+    look = LookWorker(sender)
+    look.start()
     last_hb, frame_interval = 0.0, 1.0 / PROCESS_FPS
     frame_no = 0
     try:
@@ -496,6 +605,7 @@ def main() -> None:
                 time.sleep(0.2)
                 continue
             frame = cv2.resize(frame, (640, 360))  # 降采样：检测够用，省算力
+            look.latest_frame = frame  # look 线程细看用（引用赋值原子，取用时 copy）
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             t_ms = now_mono_ms()
             frame_no += 1

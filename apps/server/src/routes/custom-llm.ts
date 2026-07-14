@@ -79,7 +79,8 @@ import {
   type CandidateTrack,
 } from '../music/music-session.js';
 import { buildStreamUrl } from '../music/stream-url.js';
-import { buildVisionContextNote } from '../perception/state.js';
+import { buildVisionContextNote, getVisionState } from '../perception/state.js';
+import { lookEnabled, requestLook } from '../perception/look.js';
 import { config } from '../config.js';
 import { MAX_ACTIVE_VOICEPRINTS, findByDisplayName, listActiveVoiceprints, soloOwnerId } from '../voiceprint/registry.js';
 import { parseSpeakerTag, resolveSpeakerFromTag, stripSpeakerTag } from '../voiceprint/speaker-tag.js';
@@ -339,6 +340,12 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const musicContextNote = musicSession ? buildMusicContextNote(musicSession) : undefined;
   // Vision V0（VISION_ENABLED 默认关）：采集端在线且心跳 fresh 才有值，其余 undefined=零影响。
   const visionContextNote = tenant ? buildVisionContextNote(tenant.id) : undefined;
+  // 切片3 look_closely：探针在线（fresh）才注入——有眼睛才有"细看"能力
+  const lookToolWanted = Boolean(
+    lookEnabled() && sessionId && tenant && getVisionState(tenant.id)?.fresh,
+  );
+  const allTools = [...(musicTools ?? []), ...(lookToolWanted ? [LOOK_CLOSELY_TOOL] : [])];
+  const turnTools = allTools.length ? allTools : undefined;
 
   const llm = createLlm();
   const id = `chatcmpl-${Math.random().toString(36).slice(2, 12)}`;
@@ -389,7 +396,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
         userText,
         history,
         contextNote: [contextNoteText, musicContextNote, visionContextNote].filter(Boolean).join('\n\n') || undefined,
-        tools: musicTools,
+        tools: turnTools,
         onDelta: (delta) => {
           if (!firstTokenSeen) {
             firstTokenSeen = true;
@@ -401,15 +408,36 @@ customLlmRoute.post('/chat/completions', async (c) => {
           enqueue(chunk({ content: delta }, null));
         },
         onToolCall: async (name, argsJson) => {
-          // 只在有活跃音乐会话时才会被调用到（此时 musicRoomId 必已判真，见上方注入条件）；
-          // 早退纯为 TS 类型收窄，非预期分支。
-          if (!musicRoomId) return;
           // abort 守卫（cc 验收补）：火山弃用本轮（interim 被 final 取代 / barge-in）时副作用
-          // 绝不执行——半句 interim 触发的音量/切歌用户根本没听到 ack，属静默误操作。
+          // 绝不执行——半句 interim 触发的副作用用户根本没听到 ack，属静默误操作。
           if (c.req.raw.signal.aborted) {
-            console.log(`[music-fc] session=${musicRoomId} tool_call discarded (aborted), side-effect skipped`);
+            console.log(`[fc] session=${sessionId ?? '-'} tool_call "${name}" discarded (aborted), side-effect skipped`);
             return;
           }
+          // 切片3：look_closely（按需细看）——登记请求（探针轮询取走→云 VLM→插播第二段）
+          if (name === 'look_closely') {
+            if (!lookToolWanted || !sessionId || !tenant) return;
+            let question = '';
+            try {
+              question = String((JSON.parse(argsJson) as { question?: string }).question ?? '');
+            } catch {
+              /* 无参也可细看（泛描述） */
+            }
+            requestLook(tenant.id, sessionId, question || '描述画面里最显眼的内容');
+            const ack = '我仔细看看啊……';
+            if (!llmSpoke) {
+              if (!firstTokenSeen) {
+                firstTokenSeen = true;
+                if (fillerTimer) clearTimeout(fillerTimer);
+              }
+              assistantText += ack;
+              enqueue(chunk({ content: ack }, null));
+            }
+            console.log(`[look-fc] session=${sessionId} q="${question.slice(0, 30)}" speakable_ms=${Math.round(performance.now() - requestStartMs)}`);
+            return;
+          }
+          // 音乐控制（仅有活跃音乐会话时注入；早退为 TS 类型收窄）
+          if (!musicRoomId) return;
           if (name !== 'music_control') {
             console.log(`[music-fc] session=${musicRoomId} unknown tool="${name}" ignored`);
             return;
@@ -797,6 +825,28 @@ function resolveReminderCanned(
 const MUSIC_CONTROL_ACTIONS = ['pause', 'resume', 'next', 'prev', 'louder', 'quieter'] as const;
 export type MusicControlAction = (typeof MUSIC_CONTROL_ACTIONS)[number];
 const MUSIC_CONTROL_ACTION_SET = new Set<string>(MUSIC_CONTROL_ACTIONS);
+
+/** 切片3 look_closely 工具（2026-07-14）：本地符号答不了的开放视觉细节 → 单帧云 VLM。
+ *  description 反例一等公民（FC 七要点①）：符号列表能答的不调用、非视觉话题不调用。 */
+export const LOOK_CLOSELY_TOOL: LlmToolDef = {
+  type: 'function',
+  function: {
+    name: 'look_closely',
+    description:
+      '仔细看一眼摄像头画面来回答视觉细节问题。仅当用户明确在问画面里的视觉细节、且[视觉感知]给出的信息不足以回答时调用（如"我穿什么颜色的衣服""我手里拿的是什么牌子""我身后是什么"）。' +
+      '[视觉感知]里已经给出的信息（在不在、表情、已列出的物体）直接回答，不要调用。用户没在问画面内容（聊天提到"看看""你看呢"这类口头语）不要调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: '用户想知道的视觉问题原文（细看时会针对这个问题描述画面）',
+        },
+      },
+      required: ['question'],
+    },
+  },
+};
 
 /** FC 音乐控制工具定义（§4.2，设计已定稿，勿改 action 枚举/文案）。导出供测试。 */
 export const MUSIC_CONTROL_TOOL: LlmToolDef = {

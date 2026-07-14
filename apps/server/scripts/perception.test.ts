@@ -19,6 +19,7 @@ const {
 } = await import('../src/perception/state.js');
 const { maybeGreetOnReturn, maybeCareOnYawn, maybeReactToExpression, _resetGreeterState } = await import('../src/perception/greeter.js');
 const { noteExpressionEvent } = await import('../src/perception/state.js');
+const { requestLook, takeLookRequest, completeLook, _resetLookState } = await import('../src/perception/look.js');
 const { perceptionRoute } = await import('../src/routes/perception.js');
 const { createTenant } = await import('../src/tenant/registry.js');
 
@@ -449,6 +450,39 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   note = buildVisionContextNote('tenA', t0 + 2000);
   assert.ok(!note?.includes('过去半小时'), '微笑不触发关怀摘要');
   console.log('✓ 开场关怀摘要');
+}
+
+// ---------- 13. 切片3：look 状态机（请求→取走→完成插播；超时兜底） ----------
+{
+  _resetLookState();
+  const spoken: Array<{ room: string; text: string }> = [];
+  const deps = {
+    speak: async (room: string, text: string) => {
+      spoken.push({ room, text });
+    },
+  };
+  // 请求→探针取走（只取一次）→完成→插播第二段
+  requestLook('tenA', 'room-9', '我手里拿的什么', deps);
+  assert.deepEqual(takeLookRequest('tenA'), { question: '我手里拿的什么' });
+  assert.equal(takeLookRequest('tenA'), null, '同一请求只取一次');
+  assert.equal(takeLookRequest('tenB'), null, '租户隔离');
+  const consumed = await completeLook('tenA', '你拿着一瓶矿泉水，绿色标签。', deps);
+  assert.equal(consumed, true);
+  assert.ok(spoken[0]?.text.startsWith('看清了——'), `第二段插播，实际 ${spoken[0]?.text}`);
+  assert.equal(spoken[0]?.room, 'room-9');
+  // 无在途请求时 semantic 到达不插播
+  assert.equal(await completeLook('tenA', '孤儿描述', deps), false);
+  // 空描述→"没看清"话术
+  requestLook('tenA', 'room-9', 'q2', deps);
+  takeLookRequest('tenA');
+  await completeLook('tenA', '   ', deps);
+  assert.ok(spoken[1]?.text.includes('没看太清'), '空描述兜底话术');
+  // 新请求顶掉旧请求（同租户一次一个）
+  requestLook('tenA', 'room-9', '旧问题', deps);
+  requestLook('tenA', 'room-9', '新问题', deps);
+  assert.deepEqual(takeLookRequest('tenA'), { question: '新问题' });
+  _resetLookState();
+  console.log('✓ look 状态机');
 }
 
 console.log('\nperception.test 全部通过 ✅');

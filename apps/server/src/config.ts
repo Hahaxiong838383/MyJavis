@@ -76,6 +76,8 @@ export const config = {
     enabled: opt('VISION_ENABLED', '0') === '1',
     /** ②走开/回来主动打招呼（VISION_ENABLED 前提下生效；出现骚扰感可单独关）。 */
     greetingEnabled: opt('VISION_GREETING_ENABLED', '1') === '1',
+    /** 切片3 look_closely 按需细看（用户主动问→单帧上云 VLM；kill switch）。 */
+    lookEnabled: opt('VISION_LOOK_ENABLED', '1') === '1',
   },
 
   memoryConsolidation: {

@@ -13,6 +13,7 @@ import { config } from '../config.js';
 import { validateEnvelope, ingestPerception, getVisionState } from '../perception/state.js';
 import { maybeGreetOnReturn, maybeReactToExpression } from '../perception/greeter.js';
 import { noteExpressionEvent } from '../perception/state.js';
+import { completeLook, takeLookRequest } from '../perception/look.js';
 
 const MAX_BODY_BYTES = 32 * 1024; // 契约 §1：单条 ≤ 32KB
 
@@ -40,6 +41,11 @@ perceptionRoute.post('/ingest', async (c) => {
     const kind = msg.type === 'event' ? ` kind=${String((msg.payload as Record<string, unknown>).kind ?? '-')}` : '';
     console.log(`[perception] tenant=${tenant.id.slice(0, 8)} ${String(msg.type)}#${String(msg.seq)}${kind}${accepted ? '' : ' (stale-seq)'}`);
   }
+  // 切片3：semantic 上报（探针云 VLM 描述）→ 第二段插播
+  if (accepted && msg.type === 'semantic') {
+    const desc = String((msg.payload as Record<string, unknown>).description ?? '');
+    void completeLook(tenant.id, desc).catch(() => {});
+  }
   // ②回来打招呼 + 哈欠关怀：事件喂 greeter（fire-and-forget，不阻塞 ingest 响应）
   if (accepted && msg.type === 'event') {
     const p = msg.payload as Record<string, unknown>;
@@ -53,6 +59,14 @@ perceptionRoute.post('/ingest', async (c) => {
     }
   }
   return c.json({ ok: true, accepted });
+});
+
+/** 切片3：探针轮询细看请求（2s 间隔）。有请求返回 {question}，无返回 null。 */
+perceptionRoute.get('/describe-request', (c) => {
+  if (!config.vision.enabled) return c.json({ ok: false, error: 'vision disabled' }, 503);
+  const tenant = effectiveTenant(c);
+  if (!tenant) return c.json({ ok: false, error: 'no tenant' }, 403);
+  return c.json({ ok: true, request: takeLookRequest(tenant.id) });
 });
 
 perceptionRoute.get('/state', (c) => {
