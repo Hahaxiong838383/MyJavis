@@ -108,6 +108,7 @@ import {
 import { reminderStore } from '../reminder/store.js';
 import type { ChatTurn, LlmToolDef } from '../providers/types.js';
 import type { RecallResult, VolcSpeakerPayload } from '../memory/types.js';
+import { resolvePublicVoicePolicy } from '../public-voice/policy.js';
 
 const customLlmRoute = new Hono();
 
@@ -170,9 +171,13 @@ customLlmRoute.post('/chat/completions', async (c) => {
   }));
 
   const sessionId = c.req.query('session') ?? undefined; // roomId → prompt override 键
+  const publicPolicy = resolvePublicVoicePolicy(sessionId, c.req.query('public_proof') ?? undefined);
+  if ((process.env.PUBLIC_VOICE_ONLY ?? '0') === '1' && !publicPolicy) {
+    return c.json({ error: { message: 'public voice proof required', type: 'invalid_request_error' } }, 401);
+  }
   const userId = c.req.query('user') ?? undefined; // mock voiceprintId / 后续 account hint
   // 租户上下文（批次A）：/rtc/start 拼进回调 URL 的 ?tenant=；载入自配 persona/称呼。
-  const tenant = getTenant(c.req.query('tenant')?.trim() ?? '') ?? undefined;
+  const tenant = publicPolicy ? undefined : getTenant(c.req.query('tenant')?.trim() ?? '') ?? undefined;
   // 身份来源优先级：火山标签（生产真实信号）> body.speaker_evidence（预留）> query mock（调试）。
   // 标签归属校验：反查出的声纹若不属于本房间租户（理论上不可能，IdList 只带本租户），按无标签处理。
   const rawTagSpeaker = speakerAudioName ? resolveSpeakerFromTag(speakerAudioName, sessionId) : undefined;
@@ -214,9 +219,9 @@ customLlmRoute.post('/chat/completions', async (c) => {
   });
 
   // override（调试台实时调的 prompt）优先：直接用它（自带完整内容）；否则走默认人设组装 + 记忆注入。
-  const overridePrompt = getPromptOverride(sessionId);
+  const overridePrompt = publicPolicy?.systemPrompt ?? getPromptOverride(sessionId);
   const contextBundle =
-    !overridePrompt && userText.trim()
+    !publicPolicy && !overridePrompt && userText.trim()
       ? await turnTrace.measure('memoryReadMs', () =>
           memory
             .recall({
@@ -254,7 +259,9 @@ customLlmRoute.post('/chat/completions', async (c) => {
   // history 惯性压过——真机实证 history 里 assistant 说过"认错了"后，LLM 无视身份段继续
   // 说"没法通过声音认人"（幻觉理由）。措辞明确指示覆盖历史立场。
   // 无声纹身份时用租户自配称呼兜底（措辞区分：声纹=确认；称呼=礼貌默认，不冒充身份判断）。
-  const speakerNote = speakerName
+  const speakerNote = publicPolicy
+    ? undefined
+    : speakerName
     ? `[系统确认] 当前说话的是：${speakerName}。你能听出 TA 的声音。直接用名字自然称呼；` +
       `即使前面对话里你说过"不认识/认错了"，现在已确认，无需道歉解释，正常继续即可。` +
       `不要提"声纹/识别/系统/确认"这类机制词。`
@@ -268,10 +275,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
     ? makeupNote(missedReminders.map((r) => ({ display: fmtDue(r.dueAt), content: r.content })))
     : undefined;
   // 引导闭环（方案A）：上一轮因身份未识别被 quarantine 过 → 这一轮消费一次性提醒标记。
-  const guidanceNoteText = consumePendingGuidance(sessionId) ? GUIDANCE_CONTEXT_NOTE : undefined;
+  const guidanceNoteText = !publicPolicy && consumePendingGuidance(sessionId) ? GUIDANCE_CONTEXT_NOTE : undefined;
   // solo 0 声纹引导（2026-07-08 川哥拍板）：单人模式没注册过声纹也口头引导一次（租户级 24h 冷却）。
   // 此处只判定不落账——真实播出（onDone 未被火山弃播）才 markSoloGuidanceSent，interim 弃用轮不消耗配额。
   const soloGuidanceWanted =
+    !publicPolicy &&
     !guidanceNoteText &&
     shouldGuideSoloVoiceprintOnboarding(tenant?.soloMode, tenant ? listActiveVoiceprints(tenant.id).length : 1, tenant?.id);
   const contextNoteText =
@@ -286,12 +294,14 @@ customLlmRoute.post('/chat/completions', async (c) => {
 
   // 可观测性（Prefill 行为分析）：请求体键集 + user 文本头部——prefill(interim) 与 final 调用的差异在此现形。
   console.log(
-    `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
-      `${speakerName ? ` [speaker:${speakerName}${taggedName ? '' : freshEnrollName ? '·fresh-enroll' : '·sticky'}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
-      ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
+    publicPolicy
+      ? `[custom-llm] session=${sessionId ?? '-'} mode=public_mirror prompt=${publicPolicy.promptVersion} msgs=${body.messages?.length ?? 0}`
+      : `[custom-llm] session=${sessionId ?? '-'} owner=${identityResolution.ownerId ?? '-'} state=${identityResolution.state}` +
+          `${speakerName ? ` [speaker:${speakerName}${taggedName ? '' : freshEnrollName ? '·fresh-enroll' : '·sticky'}]` : ''}${overridePrompt ? ' [override]' : ''}${contextBundle?.memories.length ? ` [mem:${contextBundle.memories.length}]` : ''}` +
+          ` keys=[${Object.keys(body as Record<string, unknown>).join(',')}] msgs=${body.messages?.length ?? 0} user="${userText.slice(0, 20)}"`,
   );
   // 标签形态观测：正常剥离打确认；含"当前说话人"却没剥掉 = 火山标签形态与解析器不符，打告警。
-  if (rawUserText !== userText || /当前说话人/.test(userText)) {
+  if (!publicPolicy && (rawUserText !== userText || /当前说话人/.test(userText))) {
     console.log(
       `[custom-llm] speaker-tag raw="${rawUserText.slice(0, 80)}" clean="${userText.slice(0, 40)}" audioName=${speakerAudioName ?? 'UNPARSED!'}`,
     );
@@ -302,19 +312,19 @@ customLlmRoute.post('/chat/completions', async (c) => {
 
   // —— 声纹对话式注册（批次2）：意图命中 / 录音进行中 → server 直出话术，跳过 LLM 与记忆写入。
   //    Prefill interim 也会进这里：startEnroll 幂等（final 名字覆盖 interim），话术只播 final 版。
-  const enrollCanned = resolveEnrollCanned(sessionId, userText, tenant?.id);
+  const enrollCanned = publicPolicy ? null : resolveEnrollCanned(sessionId, userText, tenant?.id);
   if (enrollCanned) {
     console.log(`[custom-llm] enroll session=${sessionId ?? '-'} canned="${enrollCanned.slice(0, 24)}…"`);
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: enrollCanned });
   }
 
-  const forgetCanned = await resolveForgetCanned(sessionId, userText, tenant?.id, speakerName);
+  const forgetCanned = publicPolicy ? null : await resolveForgetCanned(sessionId, userText, tenant?.id, speakerName);
   if (forgetCanned) {
     console.log(`[custom-llm] forget session=${sessionId ?? '-'} canned="${forgetCanned.slice(0, 24)}…"`);
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: forgetCanned });
   }
 
-  const reminderCanned = resolveReminderCanned(sessionId, userText, tenant?.id, {
+  const reminderCanned = publicPolicy ? null : resolveReminderCanned(sessionId, userText, tenant?.id, {
     ownerId: identityResolution.ownerId,
     speakerName,
   });
@@ -323,7 +333,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: reminderCanned });
   }
 
-  const musicCanned = await resolveMusicCanned(sessionId, userText);
+  const musicCanned = publicPolicy ? null : await resolveMusicCanned(sessionId, userText);
   if (musicCanned) {
     console.log(`[custom-llm] music session=${sessionId ?? '-'} canned="${musicCanned.slice(0, 24)}…"`);
     return streamCannedReply(c, { model: body.model ?? 'myjavis', text: musicCanned });
@@ -332,7 +342,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
   // FC（function calling）音乐控制路由（MUSIC_FC_ENABLED，默认关）：控制类正则已在
   // resolveMusicCanned 里让位（见其 control 分支），走到这里说明要交给本次 LLM 调用裁决——
   // 只有房间有活跃音乐会话才注入工具 + 播放状态 contextNote（无会话=没歌可控，不必注入）。
-  const musicRoomId = config.music.fcEnabled && sessionId ? sessionId : undefined;
+  const musicRoomId = !publicPolicy && config.music.fcEnabled && sessionId ? sessionId : undefined;
   const musicSession = musicRoomId ? getMusicSession(musicRoomId) : undefined;
   const musicTools = musicSession ? [MUSIC_CONTROL_TOOL] : undefined;
   const musicContextNote = musicSession ? buildMusicContextNote(musicSession) : undefined;
@@ -437,7 +447,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
           // abort 守卫：火山弃用本次调用（Prefill 的 interim 版被 final 取代 / barge-in）时会断开
           // 连接——此时跳过全部溯源与记忆写入，防止半句 interim 或没播出的回复污染系统。
           const discarded = c.req.raw.signal.aborted;
-          if (!discarded && userText.trim()) {
+          if (!publicPolicy && !discarded && userText.trim()) {
             const userEvent = eventLog.appendUtterance({
               roomId: sessionId ?? 'unknown-room',
               tenantId: tenant?.id,
@@ -470,7 +480,7 @@ customLlmRoute.post('/chat/completions', async (c) => {
               })
               .catch(() => {});
           }
-          if (!discarded && assistantText.trim()) {
+          if (!publicPolicy && !discarded && assistantText.trim()) {
             // R2 隐私：助手回复可能复述用户隐私（"好的，你对X过敏我记住了"）——命中敏感词
             // 的回复只存脱敏占位（生产实测抓到 event_log 泄露路径，2026-07-07）
             const spoken = assistantText.trim();
@@ -483,17 +493,23 @@ customLlmRoute.post('/chat/completions', async (c) => {
               heardByUser: true,
             });
           }
-          if (!discarded && missedReminders.length) {
+          if (!publicPolicy && !discarded && missedReminders.length) {
             // 补报已随本轮回复带出（火山未弃播）→ 消耗掉，防每轮重复念
             for (const r of missedReminders) reminderStore().markDelivered(r.id, 'makeup');
             console.log(`[reminder] ${missedReminders.length} missed reminder(s) delivered via makeup`);
           }
-          if (!discarded && soloGuidanceWanted) {
+          if (!publicPolicy && !discarded && soloGuidanceWanted) {
             // solo 声纹引导已随本轮回复真实播出 → 落账进入 24h 冷却（弃播轮不落账，下轮再引导）
             markSoloGuidanceSent(tenant?.id);
             console.log(`[guidance] solo voiceprint onboarding delivered tenant=${tenant?.id ?? '-'}`);
           }
-          if (discarded) console.log(`[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`);
+          if (discarded) {
+            console.log(
+              publicPolicy
+                ? `[custom-llm] discarded (aborted) session=${sessionId ?? '-'} mode=public_mirror`
+                : `[custom-llm] discarded (aborted) session=${sessionId ?? '-'} user="${userText.slice(0, 20)}"`,
+            );
+          }
           enqueue(chunk({}, 'stop'));
         },
         onError: (err) => {

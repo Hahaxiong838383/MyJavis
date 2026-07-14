@@ -24,6 +24,7 @@ import { musicRoute } from './routes/music.js';
 import { remindersRoute } from './routes/reminders.js';
 import { syncRoute } from './routes/sync.js';
 import { privacyRoute } from './routes/privacy.js';
+import { publicVoiceRoute } from './routes/public-voice.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
 import { MemoryRefiner } from './memory/refine.js';
 import { storage as memoryStorage } from './memory/index.js';
@@ -43,9 +44,14 @@ const VERSION = ((): string => {
 
 const app = new Hono<AppEnv>();
 const port = Number(process.env.PORT ?? 3001);
+const publicVoiceOnly = (process.env.PUBLIC_VOICE_ONLY ?? '0') === '1';
+const serviceName = process.env.SERVICE_NAME?.trim() || (publicVoiceOnly ? 'myjavis-ccsite' : 'myjavis-server');
 
 // CORS 放开 origin（Tauri tauri://localhost / 本地 dev 各端都要来）；CORS 不是安全边界，真防线是下方 key。
-app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'X-Javis-Key', 'Authorization'] }));
+app.use('*', cors({
+  origin: '*',
+  allowHeaders: ['Content-Type', 'X-Javis-Key', 'Authorization', 'X-Public-Voice-Secret'],
+}));
 
 // /api/* 鉴权（多租户，批次A）：X-Javis-Key = 租户邀请码 → 绑定租户；= JAVIS_API_KEY → admin。
 // JAVIS_API_KEY 未设时（本地 dev）不拦且视为 admin。/v1 有自己的 CUSTOM_LLM_API_KEY 门。
@@ -65,16 +71,25 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 
-app.get('/health', (c) => c.json({ status: 'ok', service: 'myjavis-server', version: VERSION }));
-app.route('/api/rtc', rtcRoute);
-app.route('/api/governance', governanceRoute);
-app.route('/api/voiceprint', voiceprintRoute);
-app.route('/api/tenant', tenantRoute); // admin only（租户 CRUD/发码）
-app.route('/api/me', meRoute); // 租户自查/自配（激活校验+persona/称呼）
-app.route('/api/music', musicRoute);
-app.route('/api/reminders', remindersRoute);
-app.route('/api/sync', syncRoute);
-app.route('/api/privacy', privacyRoute); // R2 隐私记忆通道（pending/ack/session-context）
+app.get('/health', (c) => c.json({
+  status: 'ok',
+  service: serviceName,
+  version: VERSION,
+  mode: publicVoiceOnly ? 'public-voice-only' : 'full',
+}));
+// 个人站 BFF 专用控制面，不进入 /api/* 邀请码鉴权，也不暴露给浏览器直连。
+app.route('/public-voice', publicVoiceRoute);
+if (!publicVoiceOnly) {
+  app.route('/api/rtc', rtcRoute);
+  app.route('/api/governance', governanceRoute);
+  app.route('/api/voiceprint', voiceprintRoute);
+  app.route('/api/tenant', tenantRoute); // admin only（租户 CRUD/发码）
+  app.route('/api/me', meRoute); // 租户自查/自配（激活校验+persona/称呼）
+  app.route('/api/music', musicRoute);
+  app.route('/api/reminders', remindersRoute);
+  app.route('/api/sync', syncRoute);
+  app.route('/api/privacy', privacyRoute); // R2 隐私记忆通道（pending/ack/session-context）
+}
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 
@@ -86,10 +101,14 @@ serve(
     hostname: '0.0.0.0',
   },
   (info) => {
-    console.log(`[server] myjavis listening on http://${info.address}:${info.port}`);
+    console.log(`[server] ${serviceName} listening on http://${info.address}:${info.port}`);
     logProviderStatus();
-    startReminderScheduler();
-    new MemoryRefiner(memoryStorage, undefined, tenantForOwner).start(); // R3 批处理精修
+    if (!publicVoiceOnly) {
+      startReminderScheduler();
+      new MemoryRefiner(memoryStorage, undefined, tenantForOwner).start(); // R3 批处理精修
+    } else {
+      console.log('[server] public-voice-only: private routes, reminder scheduler and memory refiner disabled');
+    }
   },
 );
 
@@ -107,5 +126,5 @@ function logProviderStatus(): void {
   console.log(`[server] ASR: ${asrOk ? 'ready' : 'missing-env'}`);
   console.log(`[server] TTS: ${ttsOk ? 'ready' : 'missing-env'}`);
   console.log(`[server] LLM: ${llmOk ? 'ready' : 'missing-env'}`);
-  console.log(`[server] memory: SQLiteMemoryStore + governance`);
+  console.log(`[server] memory: ${publicVoiceOnly ? 'disabled for public voice' : 'SQLiteMemoryStore + governance'}`);
 }

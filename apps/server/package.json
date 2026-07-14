@@ -1,7 +1,7 @@
 {
   "name": "@myjavis/server",
   "private": true,
-  "version": "0.15.1",
+  "version": "0.1.0-ccsite.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
@@ -27,7 +27,8 @@
     "test:voiceprint": "tsx scripts/voiceprint.test.ts",
     "test:reminder": "tsx scripts/reminder.test.ts",
     "test:voiceprint-s123": "tsx scripts/voiceprint-s123.test.ts",
-    "test:solo-mode": "tsx scripts/solo-mode.test.ts"
+    "test:solo-mode": "tsx scripts/solo-mode.test.ts",
+    "test:public-voice": "tsx scripts/public-voice.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

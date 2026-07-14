@@ -14,6 +14,12 @@ import { callRtcOpenAPI } from '../providers/volc-openapi.js';
 import { listActiveVoiceprints } from '../voiceprint/registry.js';
 import { clearFreshEnrollName } from '../voiceprint/enroll-session.js';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
+import {
+  activePublicVoicePolicyCount,
+  createPublicVoiceProof,
+  deletePublicVoicePolicy,
+  registerPublicVoicePolicy,
+} from '../public-voice/policy.js';
 
 const require = createRequire(import.meta.url);
 // 火山 RTC token 私有格式（二进制 HMAC），原样复用火山官方 token.cjs（不移植避免 bug）。
@@ -44,11 +50,12 @@ const LLM_PREFILL = (process.env.LLM_PREFILL ?? '0') === '1';
 const INTERRUPT_SPEECH_MS = Number(process.env.INTERRUPT_SPEECH_MS ?? 800);
 
 /** 拼 custom-llm 回调 URL：?session=roomId + ?tenant=（租户上下文）+ 可选 ?user=（mock 调试键）。 */
-function buildCustomLlmUrl(roomId: string, tenantId?: string, userId?: string): string {
+function buildCustomLlmUrl(roomId: string, tenantId?: string, userId?: string, publicProof?: string): string {
   const params = new URLSearchParams();
   params.set('session', roomId);
   if (tenantId) params.set('tenant', tenantId);
   if (userId) params.set('user', userId);
+  if (publicProof) params.set('public_proof', publicProof);
   return `${CUSTOM_LLM_URL}?${params.toString()}`;
 }
 
@@ -62,6 +69,8 @@ interface VoiceChatOptions {
   voiceprintScore: number;
   /** resume-agent 用：覆盖 welcome（置空防止重启任务时重播开场白）。undefined=用默认。 */
   welcomeOverride?: string;
+  /** 公开会话回调证明；用于进程重启后仍保持无记忆隔离。 */
+  publicProof?: string;
 }
 
 /**
@@ -69,10 +78,18 @@ interface VoiceChatOptions {
  * resume 重启任务必须复用原 userId（前端还在房间里用这个身份），memoryUser/voiceMode 同理。
  * 内存态，server 重启丢失可接受（房间生命周期短于 server 运行周期）。
  */
-const agentSessions = new Map<
-  string,
-  { userId: string; tenantId: string; memoryUser?: string; voiceMode: VoiceMode; voiceprintScore: number; startedAt: number }
->();
+interface AgentSession {
+  userId: string;
+  tenantId?: string;
+  memoryUser?: string;
+  voiceMode: VoiceMode;
+  voiceprintScore: number;
+  startedAt: number;
+  mode: 'private' | 'public_mirror';
+}
+
+const agentSessions = new Map<string, AgentSession>();
+const publicSessionTimers = new Map<string, NodeJS.Timeout>();
 
 /**
  * R3.1 并发闸门（2026-07-08 川哥拍板堵口子）：此前任何激活租户可无限开房，
@@ -85,11 +102,16 @@ const agentSessions = new Map<
 const MAX_ROOMS_PER_TENANT = Number(process.env.MAX_ROOMS_PER_TENANT ?? 1);
 const MAX_GLOBAL_ROOMS = Number(process.env.MAX_GLOBAL_ROOMS ?? 8);
 const ROOM_ZOMBIE_TTL_MS = Number(process.env.ROOM_ZOMBIE_TTL_MS ?? 4 * 3600_000);
+const MAX_PUBLIC_ROOMS = Number(process.env.MAX_PUBLIC_VOICE_ROOMS ?? 2);
 
 /** 尽力停房：火山任务 StopVoiceChat（失败忽略——可能早已自停）+ 本地注册/override 清理。 */
 async function stopRoomBestEffort(roomId: string, reason: string): Promise<void> {
   clearPromptOverride(roomId);
   clearFreshEnrollName(roomId);
+  deletePublicVoicePolicy(roomId);
+  const timer = publicSessionTimers.get(roomId);
+  if (timer) clearTimeout(timer);
+  publicSessionTimers.delete(roomId);
   agentSessions.delete(roomId);
   try {
     await callRtcOpenAPI('StopVoiceChat', {
@@ -119,9 +141,103 @@ export function activeRoomCount(): number {
 export function listAgentRooms(tenantId: string): string[] {
   const rooms: string[] = [];
   for (const [roomId, sess] of agentSessions) {
-    if (sess.tenantId === tenantId) rooms.push(roomId);
+    if (sess.mode === 'private' && sess.tenantId === tenantId) rooms.push(roomId);
   }
   return rooms;
+}
+
+export interface PublicVoiceSessionResult {
+  appId: string;
+  roomId: string;
+  userId: string;
+  token: string;
+  taskId: string;
+  expiresAt: number;
+  maxSeconds: number;
+}
+
+/** 个人站 BFF 专用访客会话。它不带租户、声纹和记忆，并由服务端硬超时回收。 */
+export async function startPublicVoiceSession(input: {
+  systemPrompt: string;
+  promptVersion: string;
+  maxSeconds: number;
+}): Promise<PublicVoiceSessionResult> {
+  const appId = process.env.VOLC_RTC_APP_ID;
+  const appKey = process.env.VOLC_RTC_APP_KEY;
+  if (!appId || !appKey || !process.env.VOLC_ACCESS_KEY_ID || !process.env.VOLC_SECRET_ACCESS_KEY) {
+    throw new Error('rtc_not_configured');
+  }
+
+  await sweepZombieRooms();
+  if (agentSessions.size >= MAX_GLOBAL_ROOMS || activePublicVoicePolicyCount() >= MAX_PUBLIC_ROOMS) {
+    throw new Error('public_voice_busy');
+  }
+
+  const roomId = `public-mirror-${randomUUID()}`;
+  const userId = `guest-${randomUUID().slice(0, 8)}`;
+  const now = Date.now();
+  const expiresAt = now + input.maxSeconds * 1000;
+  const key = new AccessToken(appId, appKey, roomId, userId);
+  key.addPrivilege(privileges.PrivSubscribeStream, 0);
+  key.addPrivilege(privileges.PrivPublishStream, 0);
+  key.expireTime(Math.floor(expiresAt / 1000) + 60);
+  const token = key.serialize();
+
+  // 先注册可信策略，避免火山任务启动后首个回调抢在本地登记之前到达。
+  registerPublicVoicePolicy({
+    roomId,
+    systemPrompt: input.systemPrompt,
+    promptVersion: input.promptVersion,
+    createdAt: now,
+    expiresAt,
+  });
+
+  let result;
+  try {
+    result = await callRtcOpenAPI(
+      'StartVoiceChat',
+      buildVoiceChatConfig(roomId, userId, {
+        voiceMode: 'identify',
+        voiceprintIds: [],
+      voiceprintScore: 50,
+      welcomeOverride: '我是陈川的 AI 战略镜像，不是陈川本人。我们可以实时聊两分钟，你随时可以打断我。',
+      publicProof: createPublicVoiceProof(roomId),
+      }),
+    );
+  } catch (error) {
+    deletePublicVoicePolicy(roomId);
+    throw error;
+  }
+  const err = result?.ResponseMetadata?.Error;
+  if (err) {
+    deletePublicVoicePolicy(roomId);
+    throw new Error(`${err.Code}: ${err.Message}`);
+  }
+
+  agentSessions.set(roomId, {
+    userId,
+    voiceMode: 'identify',
+    voiceprintScore: 50,
+    startedAt: now,
+    mode: 'public_mirror',
+  });
+  const timer = setTimeout(() => {
+    void stopRoomBestEffort(roomId, 'public-hard-timeout');
+  }, input.maxSeconds * 1000);
+  timer.unref();
+  publicSessionTimers.set(roomId, timer);
+  console.log(`[rtc] public mirror started room=${roomId} ttl=${input.maxSeconds}s prompt=${input.promptVersion}`);
+
+  return { appId, roomId, userId, token, taskId: roomId, expiresAt, maxSeconds: input.maxSeconds };
+}
+
+export async function stopPublicVoiceSession(roomId: string, reason: string): Promise<boolean> {
+  const session = agentSessions.get(roomId);
+  if (session && session.mode !== 'public_mirror') return false;
+  // 服务重启后注册表会丢；共享密钥鉴权后的控制面仍可按不可伪造前缀回收火山任务。
+  if (!session && !roomId.startsWith('public-mirror-')) return false;
+  await stopRoomBestEffort(roomId, reason);
+  return true;
 }
 
 /** server 端组装 StartVoiceChat 的 VoiceChat 配置（凭证从 env，不下发前端）。 */
@@ -180,7 +296,7 @@ function buildVoiceChatConfig(roomId: string, userId: string, opts: VoiceChatOpt
       },
       LLMConfig: {
         Mode: 'CustomLLM',
-        Url: buildCustomLlmUrl(roomId, opts.tenantId, opts.memoryUser),
+        Url: buildCustomLlmUrl(roomId, opts.tenantId, opts.memoryUser, opts.publicProof),
         ModelName: 'myjavis',
         APIKey: process.env.CUSTOM_LLM_API_KEY || 'none',
         SystemMessages: [],
@@ -278,7 +394,15 @@ rtcRoute.post('/start', async (c) => {
   console.log(
     `[rtc] started room=${roomId} user=${userId} voiceMode=${voiceMode} voiceprints=${voiceprintIds.length} welcome="${welcome.slice(0, 12)}…"`,
   );
-  agentSessions.set(roomId, { userId, tenantId: tenant.id, memoryUser, voiceMode, voiceprintScore, startedAt: Date.now() });
+  agentSessions.set(roomId, {
+    userId,
+    tenantId: tenant.id,
+    memoryUser,
+    voiceMode,
+    voiceprintScore,
+    startedAt: Date.now(),
+    mode: 'private',
+  });
   return c.json({ ok: true, appId, roomId, userId, token, taskId: roomId, voiceMode, voiceprintCount: voiceprintIds.length });
 });
 
@@ -314,7 +438,9 @@ rtcRoute.post('/resume-agent', async (c) => {
   const roomId = body.roomId?.trim();
   if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
   const sess = agentSessions.get(roomId);
-  if (!sess) return c.json({ ok: false, error: 'unknown room（server 可能重启过，请重新开始对话）' }, 404);
+  if (!sess || sess.mode !== 'private' || !sess.tenantId) {
+    return c.json({ ok: false, error: 'unknown room（server 可能重启过，请重新开始对话）' }, 404);
+  }
   const voiceprintIds = listActiveVoiceprints(sess.tenantId).map((r) => r.voiceprintId);
   const result = await callRtcOpenAPI(
     'StartVoiceChat',
@@ -342,6 +468,9 @@ rtcRoute.post('/stop', async (c) => {
   const roomId = body.roomId;
   const taskId = body.taskId || roomId;
   if (!roomId) return c.json({ ok: false, error: 'roomId 必填' }, 400);
+  if (agentSessions.get(roomId)?.mode === 'public_mirror') {
+    return c.json({ ok: false, error: 'unknown room' }, 404);
+  }
   clearPromptOverride(roomId);
   clearFreshEnrollName(roomId);
   agentSessions.delete(roomId);
