@@ -15,6 +15,7 @@ import { PrivacyVaultPanel } from './components/PrivacyVaultPanel';
 import { MemoryActivityPanel } from './components/MemoryActivityPanel';
 import { ConversationHistoryPanel } from './components/ConversationHistoryPanel';
 import { usePrivacyVaultSync, useSessionContextPush } from './usePrivacyVault';
+import { useMemoryRefineConsumer } from './useMemoryRefine';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ActivationGate } from './components/ActivationGate';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -54,6 +55,7 @@ function MainApp() {
   useSyncVersions(); // UI 同步：语音/调度器改了数据 → 面板 ≤5s 自动刷新
   usePrivacyVaultSync(); // R2 隐私 vault：拉取云端 hold → 本机落库 → server 即焚
   useSessionContextPush(connected, roomId); // R2 通话注入：vault 上行 server 内存，挂断即弃
+  useMemoryRefineConsumer(); // R4 提炼代理：通话结束 5min 静默后本机 vault 批次→server→写回
   const memoryGuidance = useMemoryGuidanceBanner(); // 零声纹引导：家庭模式=⚠️记忆未激活警示 / 单人模式=💡温和引导
   const voiceStatus = useAppStore((s) => s.voiceStatus);
   const subtitle = useAppStore((s) => s.subtitle);

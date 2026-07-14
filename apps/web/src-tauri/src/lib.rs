@@ -1,4 +1,5 @@
 mod kws;
+mod refine;
 mod vision;
 
 use tauri::Manager;
@@ -77,6 +78,7 @@ pub fn run() {
         ))
         .manage(kws::KwsManager::default())
         .manage(vision::VisionManager::default())
+        .manage(refine::RefineScheduler::default())
         .invoke_handler(tauri::generate_handler![
             kws::kws_start,
             kws::kws_stop,
@@ -84,7 +86,8 @@ pub fn run() {
             vault_harden,
             vision::vision_start,
             vision::vision_stop,
-            vision::vision_status
+            vision::vision_status,
+            refine::refine_schedule
         ])
         .setup(|app| {
             setup_tray(app)?;

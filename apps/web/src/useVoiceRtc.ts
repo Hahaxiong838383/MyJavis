@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useAppStore } from './store';
 import { apiFetch } from './api';
 import { startVisionProbe, stopVisionProbe } from './vision-bridge';
+import { scheduleRefine } from './useMemoryRefine';
 
 /**
  * 火山 RTC 实时对话 Hook（抽取自 P003 useVolcRtc.ts，剥离登录/吐槽/kidshub）。
@@ -234,6 +235,7 @@ export function useVoiceRtc(): UseVoiceRtc {
 
   const stop = useCallback(async () => {
     void stopVisionProbe(); // 挂断即停探针（摄像头生命周期=通话生命周期）
+    scheduleRefine(); // R4：通话结束 5min 静默后触发本机 vault 提炼（见 useMemoryRefine.ts）
     const engine = engineRef.current;
     if (engine) {
       try {
