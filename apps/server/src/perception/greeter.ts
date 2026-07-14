@@ -94,33 +94,35 @@ export async function maybeGreetOnReturn(
  * （闭眼=想静静，主动说话是骚扰）。三层防骚扰：每类独立冷却 + 全局主动开口冷却 10min
  * + VISION_GREETING_ENABLED 总开关。
  */
+/** 同表情冷却（2026-07-14 川哥拍板 demo 测试节奏：3min；正式版可回调）。 */
+const SAME_EXPR_COOLDOWN_MS = 3 * 60_000;
+
 const EXPRESSION_REACTIONS: Record<string, { lines: string[]; cooldownMs: number }> = {
   yawning: {
     lines: YAWN_CARES,
-    cooldownMs: YAWN_CARE_COOLDOWN_MS,
+    cooldownMs: SAME_EXPR_COOLDOWN_MS,
   },
   frowning: {
     lines: [
       '看你眉头皱得——遇到什么难题了？说来听听，两个脑子总比一个强。',
       '皱着眉呢。需要我帮你想想，还是给你讲个冷笑话放松一下？',
     ],
-    cooldownMs: 30 * 60_000,
+    cooldownMs: SAME_EXPR_COOLDOWN_MS,
   },
   sad: {
     lines: [
       '感觉你情绪不太高……想聊聊吗？不想说也没关系，我陪着。',
       '看你有点蔫，要不要放首你喜欢的歌？',
     ],
-    cooldownMs: 30 * 60_000,
+    cooldownMs: SAME_EXPR_COOLDOWN_MS,
   },
   smiling: {
-    // 微笑最高频（聊天/看视频都会笑），冷却加倍防骚扰
     lines: ['笑得这么开心，有什么好事儿？分享一下呗。'],
-    cooldownMs: 60 * 60_000,
+    cooldownMs: SAME_EXPR_COOLDOWN_MS,
   },
 };
-/** 全局主动开口冷却：任意两次表情主动交互间隔下限（防连环骚扰）。 */
-const GLOBAL_REACT_COOLDOWN_MS = 10 * 60_000;
+/** 全局主动开口冷却：任意两次表情主动交互间隔下限（川哥拍板 demo：1min）。 */
+const GLOBAL_REACT_COOLDOWN_MS = 60_000;
 
 const lastReactAt = new Map<string, number>(); // `${tenantId}:${expr}` → ts
 const lastGlobalReactAt = new Map<string, number>(); // tenantId → ts

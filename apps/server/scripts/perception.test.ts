@@ -377,14 +377,14 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   let r = await maybeCareOnYawn('tenA', 'yawning', t0, deps);
   assert.equal(r, 'greeted', `真哈欠应关怀，实际 ${r}`);
   assert.ok(spoken[0]?.includes('困'), '关怀话术');
-  // 30min 冷却
-  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 10 * 60_000, deps);
+  // 同表情 3min 冷却（demo 节奏）
+  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 2 * 60_000, deps);
   assert.equal(r, 'cooldown', '冷却内不重复关怀');
-  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 31 * 60_000, deps);
+  r = await maybeCareOnYawn('tenA', 'yawning', t0 + 4 * 60_000, deps);
   assert.equal(r, 'greeted', '冷却过后可再关怀');
-  // 非 yawning 表情不触发
+  // 非 yawning 表情经 deprecated 入口不触发关怀（新表情反应走 maybeReactToExpression 有自己的用例）
   r = await maybeCareOnYawn('tenA', 'smiling', t0 + 62 * 60_000, deps);
-  assert.equal(r, 'ignored', '微笑不触发关怀');
+  assert.equal(r, 'ignored', '兼容入口只认哈欠');
   // 无房间静默
   r = await maybeCareOnYawn('tenB', 'yawning', t0, deps);
   assert.equal(r, 'no-room');
@@ -406,17 +406,17 @@ const ev = (kind: string, over: Envelope = {}, payload: Envelope = {}): Envelope
   let r = await maybeReactToExpression('tenA', 'frowning', t0, deps);
   assert.equal(r, 'greeted');
   assert.ok(spoken[0]?.includes('眉'), `皱眉话术，实际 ${spoken[0]}`);
-  // 全局冷却：5min 后换 sad 也不说（任意两次主动开口 ≥10min）
-  r = await maybeReactToExpression('tenA', 'sad', t0 + 5 * 60_000, deps);
+  // 全局冷却：30s 后换 sad 也不说（跨表情 ≥1min）
+  r = await maybeReactToExpression('tenA', 'sad', t0 + 30_000, deps);
   assert.equal(r, 'cooldown', '全局冷却拦截连环骚扰');
   // 全局冷却过后 sad 触发
-  r = await maybeReactToExpression('tenA', 'sad', t0 + 11 * 60_000, deps);
+  r = await maybeReactToExpression('tenA', 'sad', t0 + 70_000, deps);
   assert.equal(r, 'greeted');
-  // smiling 触发一次后 60min 冷却
-  r = await maybeReactToExpression('tenA', 'smiling', t0 + 22 * 60_000, deps);
-  assert.equal(r, 'greeted');
-  r = await maybeReactToExpression('tenA', 'smiling', t0 + 55 * 60_000, deps);
-  assert.equal(r, 'cooldown', 'smiling 60min 独立冷却');
+  // 同表情 3min 冷却：frowning 2.5min 时仍拦、3.5min 放行
+  r = await maybeReactToExpression('tenA', 'frowning', t0 + 150_000, deps);
+  assert.equal(r, 'cooldown', '同表情 3min 冷却');
+  r = await maybeReactToExpression('tenA', 'frowning', t0 + 215_000, deps);
+  assert.equal(r, 'greeted', '3min 后同表情放行');
   // eyes_closed / neutral 不响应（想静静）
   r = await maybeReactToExpression('tenA', 'eyes_closed', t0 + 120 * 60_000, deps);
   assert.equal(r, 'ignored');
