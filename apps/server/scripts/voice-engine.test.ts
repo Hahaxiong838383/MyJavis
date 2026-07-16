@@ -48,7 +48,10 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   assert.equal(video.canSubscribe, true, 'canSubscribe grant');
   const ttl = (payload.exp as number) - (payload.nbf as number);
   assert.ok(ttl >= 7000 && ttl <= 7600, `TTL≈2h（实际 ${ttl}s）`);
-  console.log('✅ 1. 正常签发（JWT grants/identity/TTL 全验）');
+  // explicit dispatch：roomConfig.agents 必须带 agentName，否则自研 worker 不派遣（生产实锤）
+  const roomConfig = payload.roomConfig as { agents?: Array<{ agentName?: string }> };
+  assert.equal(roomConfig?.agents?.[0]?.agentName, 'realtime-voice-agent', 'roomConfig 指名派遣 agent');
+  console.log('✅ 1. 正常签发（JWT grants/identity/TTL/agent派遣 全验）');
 }
 
 // ---------- 2. 一次一房：两次签发房名不同 ----------

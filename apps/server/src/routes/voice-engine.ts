@@ -8,7 +8,7 @@
  * 凭据 env（SELF_VOICE_URL/API_KEY/API_SECRET）齐备才启用，缺失=503（App 据此提示未开通）。
  */
 import { Hono } from 'hono';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomAgentDispatch, RoomConfiguration } from 'livekit-server-sdk';
 import { config } from '../config.js';
 import { effectiveTenant, type AppEnv } from '../tenant/context.js';
 
@@ -26,6 +26,10 @@ voiceEngineRoute.post('/token', async (c) => {
   const roomName = `jv-${tid}-${Date.now().toString(36)}`;
   const at = new AccessToken(sv.apiKey, sv.apiSecret, { identity: `jv-${tid}`, ttl: '2h' });
   at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
+  // explicit dispatch：进房即派遣自研 agent（worker 注册了 agent_name，不带这段 agent 不来）
+  at.roomConfig = new RoomConfiguration({
+    agents: [new RoomAgentDispatch({ agentName: sv.agentName })],
+  });
   const token = await at.toJwt();
   console.log(`[voice-engine] token issued tenant=${tid} room=${roomName}`);
   return c.json({ ok: true, url: sv.url, token, roomName });

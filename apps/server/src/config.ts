@@ -100,6 +100,11 @@ export const config = {
     get apiSecret() {
       return opt('SELF_VOICE_API_SECRET', '');
     },
+    /** 自研 worker 是 explicit dispatch（注册了 agent_name）：token 必须带 roomConfig.agents
+     *  指名派遣，否则房间建了 agent 永远不来（生产 E2E 实锤）。 */
+    get agentName() {
+      return opt('SELF_VOICE_AGENT_NAME', 'realtime-voice-agent');
+    },
   },
 
   memoryRefineProxy: {
