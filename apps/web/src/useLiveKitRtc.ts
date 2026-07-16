@@ -56,6 +56,17 @@ export function useLiveKitRtc(): UseVoiceRtc {
   const lkRef = useRef<LiveKitModule | null>(null);
   const genRef = useRef(0); // 代际守卫：stop/新 start 递增，在途 start 的每个 await 后校验（防挂起窗竞态泄漏）
   const audioElsRef = useRef<HTMLMediaElement[]>([]);
+  // 重连退避（2026-07-16 OOM 雪球治本件之二）：连接失败/远端异常断后指数冷却
+  // （2s→4s→8s→15s 封顶，成功清零）——服务端限单并发下，狂点重试只会反复被拒，
+  // 客户端退避把重连风暴消灭在源头；主动挂断不计入。
+  const failCountRef = useRef(0);
+  const cooldownUntilRef = useRef(0);
+
+  const noteFailure = useCallback(() => {
+    failCountRef.current += 1;
+    const backoffMs = Math.min(2000 * 2 ** (failCountRef.current - 1), 15000);
+    cooldownUntilRef.current = Date.now() + backoffMs;
+  }, []);
 
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -147,8 +158,9 @@ export function useLiveKitRtc(): UseVoiceRtc {
         rememberRelay();
       });
       room.on(RoomEvent.Disconnected, () => {
-        if (myGen !== genRef.current) return; // 主动 stop 已递增代际，避免双清理
+        if (myGen !== genRef.current) return; // 主动 stop 已递增代际，避免双清理（主动挂断不计退避）
         genRef.current++;
+        noteFailure(); // 远端异常断（拒接/删房/网络死）→ 进冷却，防立即重连风暴
         cleanup();
       });
     },
@@ -158,6 +170,11 @@ export function useLiveKitRtc(): UseVoiceRtc {
   const start = useCallback(
     async (_opts?: { systemPrompt?: string; userId?: string }) => {
       if (roomRef.current || connecting) return;
+      const waitMs = cooldownUntilRef.current - Date.now();
+      if (waitMs > 0) {
+        setError(`链路恢复中，${Math.ceil(waitMs / 1000)} 秒后再试`);
+        return;
+      }
       const myGen = ++genRef.current;
       setConnecting(true);
       setConnectPhase('starting');
@@ -214,6 +231,8 @@ export function useLiveKitRtc(): UseVoiceRtc {
         setConnecting(false);
         setConnectPhase('idle');
         setVoiceStatus('listening');
+        failCountRef.current = 0; // 连接成功，退避清零
+        cooldownUntilRef.current = 0;
 
         // 视觉常开幂等兜底（对齐 benchmark 侧行为）
         void startVisionProbe();
@@ -228,12 +247,13 @@ export function useLiveKitRtc(): UseVoiceRtc {
       } catch (e) {
         if (myGen === genRef.current) {
           setError((e as Error)?.message ?? String(e));
+          noteFailure(); // 连接失败进冷却
           cleanup();
         }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [connecting, cleanup, setVoiceStatus, bindRoomEvents],
+    [connecting, cleanup, setVoiceStatus, bindRoomEvents, noteFailure],
   );
 
   const stop = useCallback(async () => {
