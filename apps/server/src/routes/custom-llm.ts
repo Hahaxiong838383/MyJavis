@@ -390,7 +390,10 @@ customLlmRoute.post('/chat/completions', async (c) => {
           console.log(`[filler] inserted "${filler}" (wait=${fillerConfig.waitMs}ms)`);
         }
       };
-      const fillerWanted = fillerConfig.enabled && Boolean(userText.trim());
+      // 共脑会话(jv-*)不插：worker 侧已有音频承接句，这里再插文本承接句=双层疗加
+      // （2026-07-16 川哥实测"衔接重复不自然"根因——两句衔接语连播）；火山链路保留。
+      const fillerWanted =
+        fillerConfig.enabled && Boolean(userText.trim()) && !sessionId?.startsWith('jv-');
       if (fillerWanted && fillerConfig.waitMs <= 0) insertFiller();
       const fillerTimer = fillerWanted && fillerConfig.waitMs > 0 ? setTimeout(insertFiller, fillerConfig.waitMs) : null;
       await llm.streamChat({

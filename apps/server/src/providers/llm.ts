@@ -149,13 +149,25 @@ interface LlmEndpoint {
   model: string;
 }
 
-/** 可选兜底端点（配了即开启双路赛马）：LLM_FALLBACK_BASE_URL / _API_KEY / _MODEL。 */
-function fallbackEndpoint(): LlmEndpoint | null {
-  const baseUrl = process.env.LLM_FALLBACK_BASE_URL;
-  const apiKey = process.env.LLM_FALLBACK_API_KEY;
-  const model = process.env.LLM_FALLBACK_MODEL;
-  if (!baseUrl || !apiKey || !model) return null;
-  return { name: `fallback:${model}`, baseUrl, apiKey, model };
+/**
+ * 主路之外的赛马参赛路（配齐三件套即入池，缺任一静默不上场）：
+ * - 第 2 路：LLM_FALLBACK_BASE_URL / _API_KEY / _MODEL（历史命名保留，语义已是并发赛马非兜底）
+ * - 第 3 路：LLM_RACER3_BASE_URL / _API_KEY / _MODEL（2026-07-16 川哥点名火山方舟 doubao 入池试效果；
+ *   任何 OpenAI 兼容端点可插，thinking 字段随全局 LLM_DISABLE_THINKING，方舟 seed 系列兼容）
+ */
+export function extraEndpoints(): LlmEndpoint[] {
+  const out: LlmEndpoint[] = [];
+  const defs: Array<[prefix: string, name: string]> = [
+    ['LLM_FALLBACK', 'fallback'],
+    ['LLM_RACER3', 'racer3'],
+  ];
+  for (const [prefix, label] of defs) {
+    const baseUrl = process.env[`${prefix}_BASE_URL`];
+    const apiKey = process.env[`${prefix}_API_KEY`];
+    const model = process.env[`${prefix}_MODEL`];
+    if (baseUrl && apiKey && model) out.push({ name: `${label}:${model}`, baseUrl, apiKey, model });
+  }
+  return out;
 }
 
 /** 单路流式请求。onFirstVisible 在首个可见(剥think后) token 前调用，返回 false 表示本路已落败应静默丢弃。 */
@@ -289,12 +301,12 @@ class OpenAiCompatLlm implements LlmProvider {
     };
     // Gate1 探测结论（docs/gate1-probe-evidence.md）：仅 DeepSeek(main) 流式 FC 可靠——
     // MiniMax 撞词误触发（"别停，我听着呢"→误调 resume）+ tool_call 延迟 1.4-3.5s（超 speakable_ms 门槛）。
-    // 按 §4.4「仅一家可靠」分支：带 tools 的轮次退化为单路（不赛马）；无 tools 轮维持双路赛马不变。
-    const fb = args.tools?.length ? null : fallbackEndpoint();
+    // 按 §4.4「仅一家可靠」分支：带 tools 的轮次退化为单路（不赛马）；无 tools 轮 N 路赛马（2-3 路）。
+    const extras = args.tools?.length ? [] : extraEndpoints();
     const started = performance.now();
 
     // 每路独立 controller；外部 barge-in signal 传播到所有路。
-    const racers = (fb ? [main, fb] : [main]).map((ep) => ({ ep, controller: new AbortController() }));
+    const racers = [main, ...extras].map((ep) => ({ ep, controller: new AbortController() }));
     const abortAll = (): void => racers.forEach((r) => r.controller.abort());
     if (args.signal) {
       if (args.signal.aborted) abortAll();
@@ -307,7 +319,7 @@ class OpenAiCompatLlm implements LlmProvider {
       if (winner !== null) return winner === mine.ep.name;
       winner = mine.ep.name;
       racers.filter((r) => r !== mine).forEach((r) => r.controller.abort());
-      if (fb) {
+      if (extras.length) {
         console.log(`[llm] race won by ${mine.ep.name} ttft=${Math.round(performance.now() - started)}ms`);
       }
       return true;

@@ -31,7 +31,8 @@
     "test:solo-mode": "tsx scripts/solo-mode.test.ts",
     "test:consolidation": "tsx scripts/consolidation.test.ts",
     "test:memory-refine": "tsx scripts/memory-refine.test.ts",
-    "test:voice-engine": "tsx scripts/voice-engine.test.ts"
+    "test:voice-engine": "tsx scripts/voice-engine.test.ts",
+    "test:llm-race": "tsx scripts/llm-race.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
