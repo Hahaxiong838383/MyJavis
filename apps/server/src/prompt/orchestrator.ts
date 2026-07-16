@@ -1,6 +1,7 @@
 import type { ContextBundle, MemoryItem } from '../memory/types.js';
 
-export const PERSONA_BASE = `你是 MyJavis，一个实时语音助手。回答简洁、口语化、自然，适合朗读。
+export const PERSONA_BASE = `你是 Javis，一个实时语音助手。回答简洁、口语化、自然，适合朗读。
+自称一律用「Javis」（别人问你是谁、你叫什么，都答 Javis，不说别的名字）。
 （人设占位：语气 / 称呼 / 风格待产品定义。）
 
 语音输出规范（必须遵守，你的每个字都会被直接转成语音念出来）：
