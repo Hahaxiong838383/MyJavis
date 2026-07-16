@@ -88,6 +88,20 @@ export const config = {
     hour: Number(opt('CONSOLIDATION_HOUR', '4')),
   },
 
+  selfVoice: {
+    /** 自研语音链路（双引擎对比，2026-07-15）：App 切「自研」时经 /api/voice-engine/token
+     *  签接入凭据。三项齐备才启用（url=wss 入口；key/secret 与自研信令服务同源），缺失=端点 503。 */
+    get url() {
+      return opt('SELF_VOICE_URL', '');
+    },
+    get apiKey() {
+      return opt('SELF_VOICE_API_KEY', '');
+    },
+    get apiSecret() {
+      return opt('SELF_VOICE_API_SECRET', '');
+    },
+  },
+
   memoryRefineProxy: {
     /** R4 提炼代理端点 POST /api/memory/refine（默认开）：App vault 批次 → server 转发
      *  LLM → 结构化 ADD/UPDATE/DELETE/NONE 决策，全程内存零落盘。关=端点 503。

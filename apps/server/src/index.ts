@@ -26,6 +26,7 @@ import { syncRoute } from './routes/sync.js';
 import { privacyRoute } from './routes/privacy.js';
 import { perceptionRoute } from './routes/perception.js';
 import { memoryRefineRoute } from './routes/memory-refine.js';
+import { voiceEngineRoute } from './routes/voice-engine.js';
 import { startReminderScheduler } from './reminder/scheduler.js';
 import { MemoryRefiner } from './memory/refine.js';
 import { MemoryConsolidator } from './memory/consolidation.js';
@@ -80,6 +81,7 @@ app.route('/api/sync', syncRoute);
 app.route('/api/privacy', privacyRoute); // R2 隐私记忆通道（pending/ack/session-context）
 app.route('/api/perception', perceptionRoute); // Vision V0 感知 ingest（VISION_ENABLED 默认关）
 app.route('/api/memory', memoryRefineRoute); // R4 提炼代理（App vault 批次→LLM→决策，server 零落盘）
+app.route('/api/voice-engine', voiceEngineRoute); // 双引擎对比：自研链路接入凭据签发（env 齐备才启用）
 // 火山 RTC 实时对话 CustomLLM 回调端点：OpenAI 兼容 /v1/chat/completions（SSE）。
 app.route('/v1', customLlmRoute);
 

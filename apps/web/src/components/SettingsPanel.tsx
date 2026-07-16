@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, clearInviteToken, getInviteToken } from '../api';
 import { setVisionEnabled, startVisionProbe, stopVisionProbe, visionEnabled, visionProbeRunning } from '../vision-bridge';
+import { requestEngineSwitch, voiceEngine, type VoiceEngine } from '../useVoiceSession';
 
 /**
  * 账号设置面板（批次B）：人设 prompt（叠加在锁定基座上）+ Javis 对我的称呼 + 退出激活。
@@ -18,6 +19,14 @@ export function SettingsPanel() {
   const [soloMode, setSoloMode] = useState(true);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [engine, setEngine] = useState<VoiceEngine>(voiceEngine());
+
+  const switchEngine = (next: VoiceEngine) => {
+    if (next === engine) return;
+    setEngine(next);
+    requestEngineSwitch(next); // 外观 hook 收到后先挂断两栈再生效（杜绝双活跃抢麦）
+    setMessage(`已切到 ${next === 'indie' ? '自研' : 'benchmark'} 链路——正在通话会先挂断，点「开始对话」生效`);
+  };
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -154,6 +163,23 @@ export function SettingsPanel() {
           </span>
         </>
       )}
+      <div style={styles.label}>
+        语音链路（对比实验）
+        <div style={{ display: 'flex', gap: 18, marginTop: 4 }}>
+          <label style={styles.radioItem}>
+            <input type="radio" name="voice-engine" checked={engine === 'benchmark'} onChange={() => switchEngine('benchmark')} />
+            benchmark（默认）
+          </label>
+          <label style={styles.radioItem}>
+            <input type="radio" name="voice-engine" checked={engine === 'indie'} onChange={() => switchEngine('indie')} />
+            自研
+          </label>
+        </div>
+        <span style={styles.hint}>
+          两条独立实时语音链路，同场景对比体验用。切换即挂断当前通话，重新「开始对话」生效；自研链路上声纹署名、音乐语音点播等能力暂不可用。
+        </span>
+      </div>
+
       <div style={styles.footerRow}>
         <span style={styles.message}>{message}</span>
         {getInviteToken() && (
@@ -209,6 +235,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     lineHeight: 1.5,
   },
+  radioItem: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#cbd5e1', cursor: 'pointer' },
   footerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
   message: { color: '#94a3b8', fontSize: 12 },
   logoutBtn: {

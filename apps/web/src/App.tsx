@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useVoiceRtc } from './useVoiceRtc';
+import { useVoiceSession } from './useVoiceSession';
 import { startVisionProbe } from './vision-bridge';
 import { useVoiceprintEnroll } from './useVoiceprintEnroll';
 import { useMusicGuard } from './useMusicGuard';
@@ -48,8 +48,8 @@ export default function App() {
 }
 
 function MainApp() {
-  const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted } =
-    useVoiceRtc();
+  const { connected, connecting, connectPhase, error, needTapToPlay, roomId, start, stop, resumePlay, getAudioTrack, setMicMuted, engine } =
+    useVoiceSession();
   const enroll = useVoiceprintEnroll({ connected, roomId, getAudioTrack });
   const { guardState, wake, waking, kwsStatus } = useMusicGuard({ connected, roomId, setMicMuted });
   useReminderDelivery(); // 提醒触达档2：独立于通话的轮询（通知+念出）
@@ -184,7 +184,9 @@ function MainApp() {
 
       <footer style={styles.footer}>
         Pulse 由 RTC 双向真实声音驱动（我说话=麦克风轨 · Javis 说话=TTS 轨 · 音量/音调/停顿实时映射）
-        <span style={styles.version}>MyJavis v{__APP_VERSION__}</span>
+        <span style={styles.version}>
+          MyJavis v{__APP_VERSION__} · 链路：{engine === 'indie' ? '自研' : 'benchmark'}
+        </span>
       </footer>
     </div>
   );

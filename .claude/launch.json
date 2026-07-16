@@ -12,6 +12,16 @@
       "port": 5173
     },
     {
+      "name": "myjavis-server",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "/Users/rayman.chen/mycc/2-Projects/MyJavis",
+        "dev:server"
+      ],
+      "port": 3001
+    },
+    {
       "name": "myjavis-web-localapi",
       "runtimeExecutable": "bash",
       "runtimeArgs": [
