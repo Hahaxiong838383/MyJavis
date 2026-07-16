@@ -38,14 +38,6 @@ const rememberRelay = (): void => {
   }
 };
 
-/** 字幕轮累积：final 段累加 committed、interim 悬浮拼尾；同侧超时=新一轮开始。
- *  （自研侧一次自然停顿会切出多个 segment，按说话方合并——沿用测试页 team 定案值。） */
-const MERGE_GAP_MS = { user: 2500, agent: 6000 } as const;
-interface TurnAcc {
-  committed: string;
-  lastAt: number;
-}
-
 /** 自研 agent 状态 → store voiceStatus（initializing 等就绪前状态归入 listening）。 */
 const AGENT_STATE_MAP: Record<string, 'listening' | 'thinking' | 'speaking'> = {
   listening: 'listening',
@@ -64,10 +56,6 @@ export function useLiveKitRtc(): UseVoiceRtc {
   const lkRef = useRef<LiveKitModule | null>(null);
   const genRef = useRef(0); // 代际守卫：stop/新 start 递增，在途 start 的每个 await 后校验（防挂起窗竞态泄漏）
   const audioElsRef = useRef<HTMLMediaElement[]>([]);
-  const turnsRef = useRef<{ user: TurnAcc; agent: TurnAcc }>({
-    user: { committed: '', lastAt: 0 },
-    agent: { committed: '', lastAt: 0 },
-  });
 
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -90,7 +78,6 @@ export function useLiveKitRtc(): UseVoiceRtc {
   const cleanup = useCallback(() => {
     detachAudio();
     roomRef.current = null;
-    turnsRef.current = { user: { committed: '', lastAt: 0 }, agent: { committed: '', lastAt: 0 } };
     setConnected(false);
     setConnecting(false);
     setConnectPhase('idle');
@@ -129,23 +116,14 @@ export function useLiveKitRtc(): UseVoiceRtc {
         }
       });
 
-      // 字幕：final 累加 / interim 悬浮；说话方各自超时窗分轮
+      // 字幕：句级替换，对齐 benchmark 语义——最新分句直接刷新当前字幕。
+      // （0.18.0 曾按聊天气泡语义做轮内累积，单条字幕越滚越长不刷新——川哥真机反馈修正。）
       room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
         if (myGen !== genRef.current) return;
-        const who: 'user' | 'agent' = participant?.isAgent ? 'agent' : 'user';
-        const now = Date.now();
-        const acc = turnsRef.current[who];
-        if (now - acc.lastAt > MERGE_GAP_MS[who]) acc.committed = '';
-        acc.lastAt = now;
-        let interim = '';
-        for (const s of segments) {
-          if (s.final) acc.committed += s.text;
-          else interim = s.text;
-        }
-        const text = acc.committed + interim;
-        if (!text) return;
-        if (who === 'agent') setSubtitle(text);
-        else setUserSubtitle(text); // 自研侧说话人识别在服务端 prompt 层，字幕不署名
+        const latest = segments[segments.length - 1];
+        if (!latest?.text) return;
+        if (participant?.isAgent) setSubtitle(latest.text);
+        else setUserSubtitle(latest.text); // 自研侧说话人识别在服务端 prompt 层，字幕不署名
       });
 
       // AI 状态（听/想/说）：agent participant attributes
@@ -229,6 +207,8 @@ export function useLiveKitRtc(): UseVoiceRtc {
           return;
         }
         roomRef.current = room;
+        // dev-only 调试钩子：E2E 可经 window 注入合成音频轨（生产 build 不含）
+        if (import.meta.env.DEV) (window as unknown as { __lkRoom?: Room }).__lkRoom = room;
 
         setConnected(true);
         setConnecting(false);

@@ -26,9 +26,17 @@ voiceEngineRoute.post('/token', async (c) => {
   const roomName = `jv-${tid}-${Date.now().toString(36)}`;
   const at = new AccessToken(sv.apiKey, sv.apiSecret, { identity: `jv-${tid}`, ttl: '2h' });
   at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
-  // explicit dispatch：进房即派遣自研 agent（worker 注册了 agent_name，不带这段 agent 不来）
+  // explicit dispatch：进房即派遣自研 agent（worker 注册了 agent_name，不带这段 agent 不来）。
+  // metadata=A 方案共脑指引（2026-07-16）：worker 据此把 LLM 指回本 server 的 CustomLLM 端点
+  // （session/tenant 走 query），记忆/人设/视觉融合与 benchmark 同源。仅非敏感字段——
+  // roomConfig 在 JWT payload 里客户端可解码，绝不放 key/secret（端点鉴权 key 在 worker 侧 env）。
   at.roomConfig = new RoomConfiguration({
-    agents: [new RoomAgentDispatch({ agentName: sv.agentName })],
+    agents: [
+      new RoomAgentDispatch({
+        agentName: sv.agentName,
+        metadata: JSON.stringify({ myjavis: { session: roomName, tenant: tenant.id } }),
+      }),
+    ],
   });
   const token = await at.toJwt();
   console.log(`[voice-engine] token issued tenant=${tid} room=${roomName}`);

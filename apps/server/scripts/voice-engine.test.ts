@@ -49,9 +49,14 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   const ttl = (payload.exp as number) - (payload.nbf as number);
   assert.ok(ttl >= 7000 && ttl <= 7600, `TTL≈2h（实际 ${ttl}s）`);
   // explicit dispatch：roomConfig.agents 必须带 agentName，否则自研 worker 不派遣（生产实锤）
-  const roomConfig = payload.roomConfig as { agents?: Array<{ agentName?: string }> };
+  const roomConfig = payload.roomConfig as { agents?: Array<{ agentName?: string; metadata?: string }> };
   assert.equal(roomConfig?.agents?.[0]?.agentName, 'realtime-voice-agent', 'roomConfig 指名派遣 agent');
-  console.log('✅ 1. 正常签发（JWT grants/identity/TTL/agent派遣 全验）');
+  // A 方案共脑指引：metadata 带 session/tenant（非敏感），worker 据此接回 MyJavis 大脑
+  const dispatchMeta = JSON.parse(roomConfig!.agents![0]!.metadata!) as { myjavis: { session: string; tenant: string } };
+  assert.equal(dispatchMeta.myjavis.session, data.roomName, 'metadata.session=房名');
+  assert.equal(dispatchMeta.myjavis.tenant, tenant.id, 'metadata.tenant=完整租户 id');
+  assert.ok(!JSON.stringify(dispatchMeta).match(/key|secret/i), 'metadata 零敏感字段');
+  console.log('✅ 1. 正常签发（JWT grants/identity/TTL/agent派遣/共脑metadata 全验）');
 }
 
 // ---------- 2. 一次一房：两次签发房名不同 ----------

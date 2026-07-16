@@ -340,9 +340,11 @@ customLlmRoute.post('/chat/completions', async (c) => {
   const musicContextNote = musicSession ? buildMusicContextNote(musicSession) : undefined;
   // Vision V0（VISION_ENABLED 默认关）：采集端在线且心跳 fresh 才有值，其余 undefined=零影响。
   const visionContextNote = tenant ? buildVisionContextNote(tenant.id) : undefined;
-  // 切片3 look_closely：探针在线（fresh）才注入——有眼睛才有"细看"能力
+  // 切片3 look_closely：探针在线（fresh）才注入——有眼睛才有"细看"能力。
+  // 自研链路会话（session=jv-* ，A 方案共脑）没有火山插播通道，两段式第二段发不出去
+  // （ack 后永远没下文）→ 禁用；视觉 contextNote 注入不受影响（符号层照常融合）。
   const lookToolWanted = Boolean(
-    lookEnabled() && sessionId && tenant && getVisionState(tenant.id)?.fresh,
+    lookEnabled() && sessionId && !sessionId.startsWith('jv-') && tenant && getVisionState(tenant.id)?.fresh,
   );
   const allTools = [...(musicTools ?? []), ...(lookToolWanted ? [LOOK_CLOSELY_TOOL] : [])];
   const turnTools = allTools.length ? allTools : undefined;
