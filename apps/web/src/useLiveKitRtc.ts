@@ -197,7 +197,13 @@ export function useLiveKitRtc(): UseVoiceRtc {
         let room: Room | null = null;
         for (let i = 0; i < attempts.length; i++) {
           const mode = attempts[i]!;
-          const candidate = new lk.Room({ adaptiveStream: true, dynacast: true });
+          // audioCaptureDefaults 显式锁定（2026-07-17 降噪快赢1）：此前走 livekit-client
+          // 默认（大概率开但未确认）；显式声明后 AEC/降噪/AGC 不随库升级或 WebView 默认漂移。
+          const candidate = new lk.Room({
+            adaptiveStream: true,
+            dynacast: true,
+            audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
           bindRoomEvents(candidate, lk, myGen);
           try {
             await candidate.connect(
