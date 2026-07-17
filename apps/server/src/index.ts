@@ -9,6 +9,13 @@
  * WS 路径（/ws/voice，服务端跑 ASR/LLM/TTS 三段）尚为 provider 骨架（volc-asr/volc-tts 待补二进制帧），
  * pipeline.ts 未接线 —— 见 docs/ARCHITECTURE.md。记忆系统当前为占位（NullMemoryStore）。
  */
+// 🔴 产品时区显式锚定（2026-07-16 reminder 时区事故）：reminder 的时间解析与播报
+// （getHours/setHours/toDateString）全依赖进程时区；老进程启动于系统还是 UTC 的年代，
+// 时区缓存在进程里 → "提醒我喝水"复述出 UTC 时刻"今天 13:31"（实际 21:31 CST）。
+// 产品时间语义=中国用户，与部署环境解耦：换机/重装/容器（默认 UTC）全免疫。
+// 必须在任何 Date 使用前执行（node ≥16 对 process.env.TZ 赋值会刷新时区缓存）。
+if (!process.env.TZ) process.env.TZ = 'Asia/Shanghai';
+
 import { readFileSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
